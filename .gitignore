@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+data/control-plane.db
+data/control-plane.db-*
+.pytest_cache/
+.ruff_cache/
+.omo/
+.codegraph
+build/
+dist/
+*.egg-info/

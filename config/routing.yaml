@@ -1,0 +1,20 @@
+intents:
+  ask:
+    keywords: ["是什么", "为什么", "解释", "怎么回事", "what", "why", "explain"]
+    target: open_webui
+  read:
+    keywords: ["总结", "读取", "看看文档", "分析文档", "summarize", "read"]
+    target: open_webui_workspace
+  capture:
+    keywords: ["记一下", "记录", "备忘", "note", "remember"]
+    target: open_webui_note
+  plan:
+    keywords: ["计划", "怎么做", "拆解", "方案", "plan"]
+    target: multica_read
+  execute:
+    keywords: ["开发", "实现", "修复", "处理", "执行", "继续处理", "implement", "fix", "execute"]
+    target: multica
+
+default:
+  intent: ask
+  target: open_webui

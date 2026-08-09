@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-ai-control-plane"
+version = "0.4.0"
+description = "Thin context binding and routing layer between Open WebUI and Multica"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "typer>=0.12",
+  "pydantic>=2.8",
+  "PyYAML>=6.0",
+]
+
+[dependency-groups]
+dev = [
+  "basedpyright>=1.31",
+  "httpx2>=0.1",
+  "pytest>=8",
+  "ruff>=0.12",
+]
+
+[project.scripts]
+aicp = "personal_ai_control_plane.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+extraPaths = ["src"]
+
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["src"]
