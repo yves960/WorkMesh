@@ -1,5 +1,7 @@
 # Personal AI Control Plane v0.4
 
+[中文使用指南](README.zh-CN.md)
+
 v0.4 is the first version intended to be used **from Open WebUI as the normal conversational entry point**.
 
 The architecture stays deliberately thin:
