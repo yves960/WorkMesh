@@ -54,7 +54,219 @@ AICP 支持 macOS 和 Windows。
 
 安装脚本不会固定或下载某个 Python 小版本，而是使用本机已经安装的兼容解释器。
 
-## 3. macOS 安装
+## 3. 安装 Open WebUI
+
+本方案将 Open WebUI 部署在 Linux Server，并通过浏览器为团队提供统一入口。以下步骤使用 Python 虚拟环境，不使用 Docker。
+
+Open WebUI 对 Python 的兼容范围会随版本变化。安装前请查看 [Open WebUI 官方 Quick Start](https://docs.openwebui.com/getting-started/quick-start/)；下面的命令使用服务器实际安装的 `python3`，不在脚本中固定小版本。
+
+### 3.1 创建运行用户和目录
+
+```bash
+sudo useradd --system \
+  --home /opt/open-webui \
+  --shell /usr/sbin/nologin \
+  openwebui
+
+sudo install -d -o openwebui -g openwebui /opt/open-webui
+sudo install -d -o openwebui -g openwebui /data/open-webui
+```
+
+如果 `openwebui` 用户已经存在，跳过 `useradd`。
+
+### 3.2 使用实际安装的 Python 创建虚拟环境
+
+```bash
+PYTHON_BIN=$(command -v python3)
+"$PYTHON_BIN" --version
+
+sudo -u openwebui "$PYTHON_BIN" -m venv /opt/open-webui/.venv
+sudo -u openwebui /opt/open-webui/.venv/bin/pip install --upgrade pip
+sudo -u openwebui /opt/open-webui/.venv/bin/pip install open-webui
+```
+
+确认安装：
+
+```bash
+/opt/open-webui/.venv/bin/open-webui --help
+```
+
+### 3.3 安装并启动 systemd 服务
+
+仓库已经提供 [open-webui.service](deploy/open-webui/open-webui.service)：
+
+```bash
+sudo install -m 0644 deploy/open-webui/open-webui.service \
+  /etc/systemd/system/open-webui.service
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now open-webui
+sudo systemctl status open-webui
+```
+
+查看日志：
+
+```bash
+sudo journalctl -u open-webui -f
+```
+
+浏览器打开：
+
+```text
+http://<linux-server>:8080
+```
+
+第一个注册账号会成为管理员。随后在管理员设置中配置模型 Provider、用户、Group、Knowledge 和 Web Search。生产环境应在 Open WebUI 前配置 HTTPS 反向代理。
+
+### 3.4 更新 Open WebUI
+
+更新前先备份 `/data/open-webui`，再执行：
+
+```bash
+sudo systemctl stop open-webui
+sudo -u openwebui /opt/open-webui/.venv/bin/pip install --upgrade open-webui
+sudo systemctl start open-webui
+sudo journalctl -u open-webui -n 100 --no-pager
+```
+
+官方更新说明：[Updating Open WebUI](https://docs.openwebui.com/getting-started/updating/)。
+
+## 4. 安装 Multica
+
+Multica 包含两个部分：
+
+- Multica Service：Web、API 和数据库，可以使用 Multica Cloud，也可以自行部署。
+- Multica CLI/Daemon：安装在开发者电脑上，连接 Workspace，并在本机调用 OpenCode 等 Coding Agent。
+
+即使 Multica Service 部署在服务器，Daemon 和 Coding Agent 仍应运行在实际拥有代码与工具链的开发者电脑上。
+
+### 4.1 安装 Multica CLI
+
+macOS 或 Linux 使用 Homebrew：
+
+```bash
+brew install multica-ai/tap/multica
+```
+
+没有 Homebrew 时，可以使用官方安装脚本：
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh \
+  | bash
+```
+
+Windows PowerShell，无需管理员权限：
+
+```powershell
+irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+```
+
+Windows 安装完成后需要打开一个新终端，使 `%USERPROFILE%\.multica\bin` 进入 `PATH`。
+
+验证：
+
+```bash
+multica version
+```
+
+官方安装说明：[Multica CLI Installation Guide](https://github.com/multica-ai/multica/blob/main/CLI_INSTALL.md)。
+
+### 4.2 连接 Multica Cloud
+
+如果使用 Multica Cloud，执行一键设置：
+
+```bash
+multica setup cloud
+```
+
+也可以分步执行：
+
+```bash
+multica login
+multica auth status
+multica daemon start
+multica daemon status
+```
+
+`multica login` 会打开浏览器完成认证。无浏览器环境可以在 Web UI 创建 Personal Access Token，然后使用交互式 Token 登录，避免 Token 留在 shell 历史中：
+
+```bash
+multica login --token=
+```
+
+### 4.3 Self-host Multica Service
+
+服务器需要 Docker Engine 或 Docker Desktop、Compose v2、Git、Make、curl 和 OpenSSL，并确保本机端口 `3000`、`8080` 可用。
+
+```bash
+docker info
+docker compose version
+
+git clone --depth 1 https://github.com/multica-ai/multica.git
+cd multica
+make selfhost
+```
+
+`make selfhost` 会生成 `.env`、随机密钥和数据库密码，拉取 PostgreSQL、backend、frontend 镜像并创建持久卷。
+
+验证：
+
+```bash
+docker compose -f docker-compose.selfhost.yml ps
+curl -fsS http://localhost:8080/readyz
+```
+
+预期 `/readyz` 返回数据库和迁移均为 `ok`。浏览器打开 `http://localhost:3000` 完成首次登录并创建 Workspace。
+
+在运行 Coding Agent 的电脑上安装 CLI 后执行：
+
+```bash
+multica setup self-host
+multica daemon status
+```
+
+如果 Service 在另一台机器：
+
+```bash
+multica setup self-host \
+  --server-url https://api.example.com \
+  --app-url https://app.example.com
+```
+
+远程部署不要直接把 `3000`、`8080` 暴露到公网，应使用 HTTPS 反向代理。完整说明：[Multica Self-host Quickstart](https://multica.ai/docs/self-host-quickstart)。
+
+### 4.4 更新和排查
+
+更新 CLI：
+
+```bash
+brew upgrade multica-ai/tap/multica
+# 非 Homebrew 安装
+multica update
+```
+
+Daemon 常用命令：
+
+```bash
+multica daemon restart
+multica daemon status
+multica daemon logs -f
+```
+
+Self-host 更新前应先备份 PostgreSQL，再拉取配置和镜像：
+
+```bash
+cd multica
+git pull --ff-only
+docker compose -f docker-compose.selfhost.yml pull
+docker compose -f docker-compose.selfhost.yml up -d
+curl -fsS http://localhost:8080/readyz
+```
+
+Daemon 会以当前操作系统用户的权限执行 Agent。生产使用时应采用专用用户、容器或虚拟机隔离，不要让 Daemon 获得超出目标仓库所需的权限。
+
+## 5. macOS 安装 AICP
 
 安装 `uv`：
 
@@ -76,7 +288,7 @@ chmod +x install.sh run-api.sh
 Using Python 3.x.x at /path/to/python3
 ```
 
-## 4. Windows 安装
+## 6. Windows 安装 AICP
 
 先安装 `uv` 和一个兼容的 Python，然后在项目目录执行：
 
@@ -87,7 +299,7 @@ run-api.cmd
 
 `install.cmd` 会通过 `uv python find` 选择本机兼容解释器，不依赖固定的 `py -3.x` 命令。
 
-## 5. 启动后验证
+## 7. 启动后验证
 
 访问：
 
@@ -118,7 +330,7 @@ data/control-plane.db
 
 该数据库只保存 Context 和系统绑定，不保存 Multica 的业务实体副本，也不保存 Knowledge 内容。
 
-## 6. 配置 Context
+## 8. 配置 Context
 
 打开 `http://127.0.0.1:8765/admin`，然后：
 
@@ -148,7 +360,7 @@ uv run aicp context bind-knowledge asset-center \
 
 Project Resource 始终从 Multica 实时读取。AICP 不建立 Git 仓库或本地目录 Registry。
 
-## 7. 接入 Open WebUI
+## 9. 接入 Open WebUI
 
 在每个用户自己的 Open WebUI 设置中添加 User Tool Server：
 
@@ -177,7 +389,7 @@ workspace_run_messages
 
 不要把完整的 `/openapi.json` 配置给聊天 Agent，因为其中包含管理 API。
 
-## 8. Knowledge 查询
+## 10. Knowledge 查询
 
 当 `workspace_context_brief` 返回：
 
@@ -194,7 +406,7 @@ workspace_run_messages
 
 Open WebUI 应继续使用自己的 Knowledge 工具完成 RAG 查询。AICP 只返回绑定和查询计划，不读取文档、不生成 Embedding，也不保存向量。
 
-## 9. Multica 与 OpenCode
+## 11. Multica 与 OpenCode
 
 OpenCode 由 Multica 管理，AICP 不直接启动或注册 OpenCode。
 
@@ -227,7 +439,7 @@ uv run aicp issue-runs MUL-128 --context <context-id>
 uv run aicp run-messages <task-id> --context <context-id>
 ```
 
-## 10. Linux 部署 Open WebUI
+## 12. Linux 部署 Open WebUI
 
 Open WebUI 可以部署在 Linux Server，AICP 继续运行在每个用户的电脑上。
 
@@ -257,7 +469,7 @@ systemctl status open-webui
 
 生产环境建议在 Open WebUI 前配置 HTTPS 反向代理。
 
-## 11. 第一阶段验收
+## 13. 第一阶段验收
 
 在 Open WebUI 中依次验证：
 
@@ -271,7 +483,7 @@ systemctl status open-webui
 
 其中第 6 项必须由 Open WebUI Knowledge 工具完成最终查询；AICP 只负责解析 Context 和返回 Knowledge Binding。
 
-## 12. 常见问题
+## 14. 常见问题
 
 ### Open WebUI 看不到六个工具
 
@@ -302,7 +514,7 @@ uv run aicp doctor
 
 安装一个满足 `pyproject.toml` 中 `requires-python` 范围的 Python，然后重新执行安装脚本。无需修改脚本中的版本号。
 
-## 13. 安全边界
+## 15. 安全边界
 
 当前阶段禁止自动写入 Multica：
 

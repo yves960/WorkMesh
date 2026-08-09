@@ -88,7 +88,66 @@ run-api.cmd
 .venv\Scripts\aicp.exe context list
 ```
 
-## 5. Multica 与 OpenCode
+## 5. 安装 Multica 并接入 OpenCode
+
+Multica Service 可以使用 Cloud，也可以 Self-host；Multica CLI/Daemon 必须安装在拥有代码、OpenCode 和本地工具链的用户电脑上。
+
+### 5.1 安装 CLI
+
+macOS/Linux：
+
+```bash
+brew install multica-ai/tap/multica
+```
+
+没有 Homebrew 时：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.sh | bash
+```
+
+Windows PowerShell：
+
+```powershell
+irm https://raw.githubusercontent.com/multica-ai/multica/main/scripts/install.ps1 | iex
+```
+
+确认安装：
+
+```bash
+multica version
+```
+
+### 5.2 连接 Cloud 或 Self-host
+
+Multica Cloud：
+
+```bash
+multica setup cloud
+multica daemon status
+```
+
+Self-host Multica Service：
+
+```bash
+git clone --depth 1 https://github.com/multica-ai/multica.git
+cd multica
+make selfhost
+docker compose -f docker-compose.selfhost.yml ps
+curl -fsS http://localhost:8080/readyz
+```
+
+然后在开发者电脑连接 Self-host Service：
+
+```bash
+multica setup self-host \
+  --server-url https://api.example.com \
+  --app-url https://app.example.com
+```
+
+完整的跨平台安装、首次登录、更新和故障排查步骤见 [中文使用指南](README.zh-CN.md#4-安装-multica)。
+
+### 5.3 配置 Multica 与 OpenCode
 
 先在 Multica 中完成以下配置，具体创建命令以当前安装的 Multica 版本为准：
 
