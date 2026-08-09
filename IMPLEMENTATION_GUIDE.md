@@ -12,6 +12,8 @@
 
 ## 2. Linux 安装 Open WebUI
 
+本节仅适用于采用 systemd 的 Linux 团队服务器。macOS 没有 `useradd` 和 `systemctl`；如需在 macOS 本机安装或验证 Open WebUI，请直接使用 [中文版指导文档的 macOS 步骤](README.zh-CN.md#31-macos-本机安装与启动)。
+
 以下命令需要 root 权限。先安装与当前 Open WebUI 版本兼容的 Python；命令直接使用服务器现有的 `python3`，不固定小版本：
 
 ```bash

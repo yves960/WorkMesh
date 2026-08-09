@@ -54,13 +54,55 @@ AICP 支持 macOS 和 Windows。
 
 安装脚本不会固定或下载某个 Python 小版本，而是使用本机已经安装的兼容解释器。
 
-## 3. 安装 Open WebUI
+## 3. 安装 Open WebUI（按平台选择）
 
-本方案将 Open WebUI 部署在 Linux Server，并通过浏览器为团队提供统一入口。以下步骤使用 Python 虚拟环境，不使用 Docker。
+先根据运行位置选择命令：
 
-Open WebUI 对 Python 的兼容范围会随版本变化。安装前请查看 [Open WebUI 官方 Quick Start](https://docs.openwebui.com/getting-started/quick-start/)；下面的命令使用服务器实际安装的 `python3`，不在脚本中固定小版本。
+| 使用场景 | 继续阅读 |
+| --- | --- |
+| macOS 本机安装或验证 | 直接执行 3.1，不要运行 `useradd` 或 `systemctl` |
+| Linux 团队服务器 | 从 3.2 开始，使用独立用户和 systemd |
 
-### 3.1 创建运行用户和目录
+`useradd`、`/usr/sbin/nologin` 和 `systemctl` 都是 Linux 服务器命令。macOS 没有这些命令，不应尝试用 `dscl` 替换；本地运行时直接使用当前登录用户即可。
+
+Open WebUI 对 Python 的兼容范围会随版本变化。安装前请查看 [Open WebUI 官方 Quick Start](https://docs.openwebui.com/getting-started/quick-start/)；以下命令会发现并使用机器实际安装的 `python3`，不会在脚本中锁定 Python 小版本。若该解释器不在 Open WebUI 当前支持范围内，先安装一个兼容解释器，再通过 `PYTHON_BIN` 指定它。
+
+### 3.1 macOS 本机安装与启动
+
+macOS 本地验证无需创建系统用户，也无需安装 systemd。数据和虚拟环境都放在当前用户目录：
+
+```bash
+OPEN_WEBUI_HOME="$HOME/Library/Application Support/Open WebUI"
+OPEN_WEBUI_DATA="$OPEN_WEBUI_HOME/data"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
+
+test -n "$PYTHON_BIN" || { echo "未找到 python3"; exit 1; }
+"$PYTHON_BIN" --version
+
+mkdir -p "$OPEN_WEBUI_HOME" "$OPEN_WEBUI_DATA"
+"$PYTHON_BIN" -m venv "$OPEN_WEBUI_HOME/.venv"
+"$OPEN_WEBUI_HOME/.venv/bin/python" -m pip install --upgrade pip
+"$OPEN_WEBUI_HOME/.venv/bin/python" -m pip install open-webui
+
+DATA_DIR="$OPEN_WEBUI_DATA" \
+  "$OPEN_WEBUI_HOME/.venv/bin/open-webui" serve \
+  --host 127.0.0.1 \
+  --port 8080
+```
+
+浏览器打开 `http://127.0.0.1:8080`。终端需要保持运行；按 `Ctrl+C` 停止服务。
+
+如果机器安装了多个 Python，可以在执行上述命令前把 `PYTHON_BIN` 指向实际要使用的兼容解释器：
+
+```bash
+export PYTHON_BIN=/实际安装路径/python3
+```
+
+这里不要求固定路径或小版本，但所选解释器必须满足 Open WebUI 当前官方兼容范围。
+
+### 3.2 Linux 创建运行用户和目录
+
+以下步骤仅适用于采用 systemd 的 Linux 团队服务器。本方案将 Open WebUI 部署在 Linux Server，并通过浏览器为团队提供统一入口。
 
 ```bash
 sudo useradd --system \
@@ -74,7 +116,7 @@ sudo install -d -o openwebui -g openwebui /data/open-webui
 
 如果 `openwebui` 用户已经存在，跳过 `useradd`。
 
-### 3.2 使用实际安装的 Python 创建虚拟环境
+### 3.3 Linux 使用实际安装的 Python 创建虚拟环境
 
 ```bash
 PYTHON_BIN=$(command -v python3)
@@ -91,7 +133,7 @@ sudo -u openwebui /opt/open-webui/.venv/bin/pip install open-webui
 /opt/open-webui/.venv/bin/open-webui --help
 ```
 
-### 3.3 安装并启动 systemd 服务
+### 3.4 Linux 安装并启动 systemd 服务
 
 仓库已经提供 [open-webui.service](deploy/open-webui/open-webui.service)：
 
@@ -118,7 +160,7 @@ http://<linux-server>:8080
 
 第一个注册账号会成为管理员。随后在管理员设置中配置模型 Provider、用户、Group、Knowledge 和 Web Search。生产环境应在 Open WebUI 前配置 HTTPS 反向代理。
 
-### 3.4 更新 Open WebUI
+### 3.5 Linux 更新 Open WebUI
 
 更新前先备份 `/data/open-webui`，再执行：
 
