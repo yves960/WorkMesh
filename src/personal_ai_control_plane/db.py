@@ -44,6 +44,23 @@ CREATE TABLE IF NOT EXISTS openwebui_knowledge_bindings (
 
 CREATE INDEX IF NOT EXISTS idx_bindings_context ON multica_bindings(context_id);
 CREATE INDEX IF NOT EXISTS idx_owui_knowledge_context ON openwebui_knowledge_bindings(context_id);
+
+CREATE TABLE IF NOT EXISTS loop_runs (
+    run_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    project_path TEXT NOT NULL,
+    profile_name TEXT,
+    issue_ref TEXT NOT NULL,
+    dry_run INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'running',
+    evidence_uri TEXT,
+    diff_summary TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_loop_runs_created ON loop_runs(created_at);
 """
 
 

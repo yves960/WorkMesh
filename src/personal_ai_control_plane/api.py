@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from .admin import admin_page
 from .agent_routes import router as agent_router
 from .http_errors import CONTROL_ERRORS, raise_http
+from .loop_routes import router as loop_router
 from .models import (
     ContextCreate,
     ContextResolveRequest,
@@ -52,6 +53,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(agent_router)
+app.include_router(loop_router)
 
 
 @app.get("/", include_in_schema=False)

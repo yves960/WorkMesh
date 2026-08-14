@@ -53,3 +53,23 @@ class ContextBriefRequest(BaseModel):
         min_length=1,
         description="User's original natural-language question, including the context/project name",
     )
+
+
+class LoopRunRequest(BaseModel):
+    """Internal-only payload for POST /api/v1/loop/run."""
+
+    workspace_id: str = Field(min_length=1)
+    project_path: str = Field(min_length=1)
+    profile_name: str | None = None
+    issue_ref: str = Field(min_length=1)
+    dry_run: bool = True
+
+
+class LoopCallbackRequest(BaseModel):
+    """ForgeLoop completion callback payload for POST /api/v1/loop/callback."""
+
+    run_id: str = Field(min_length=1)
+    status: Literal["pass", "fail"]
+    evidence_uri: str | None = None
+    diff_summary: str | None = None
+    profile_name: str | None = None
