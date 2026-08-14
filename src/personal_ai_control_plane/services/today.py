@@ -5,6 +5,7 @@ from typing import Any
 
 from ..errors import ControlPlaneError
 from ..integrations.multica import MulticaClient
+from ..loops import active_loops
 from .contexts import list_contexts
 from .multica_work import context_issues
 
@@ -130,5 +131,6 @@ def build_today(client: MulticaClient | None = None) -> dict[str, Any]:
             1 for x in all_items if _norm(x.get("status")) == "in_progress"
         ),
         "focus": focus,
+        "active_loops": active_loops(),
         "errors": errors,
     }

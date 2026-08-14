@@ -5,6 +5,7 @@ from typing import Any
 
 from ..errors import ContextNotFound, ControlPlaneError
 from ..integrations.multica import MulticaClient
+from ..loops import active_loops
 from .contexts import get_context, list_contexts, resolve_context
 from .multica_work import context_issues, resolve_workspace_id
 from .resources import context_resources
@@ -186,6 +187,7 @@ def context_brief(text: str, *, client: MulticaClient | None = None) -> dict[str
                 }
                 for x in list_contexts()
             ],
+            "active_loops": active_loops(),
             "next_action": "Choose the matching context from available_contexts or ask the user only if genuinely ambiguous.",
         }
 
@@ -210,6 +212,7 @@ def context_brief(text: str, *, client: MulticaClient | None = None) -> dict[str
         "projects": _project_snapshots(ctx, client),
         "work": _work_summary(issues),
         "project_resources": resources,
+        "active_loops": active_loops(),
         "openwebui_knowledge": {
             "bindings": ctx.get("openwebui_knowledge_bindings", []),
             "knowledge_ids": knowledge_ids,
