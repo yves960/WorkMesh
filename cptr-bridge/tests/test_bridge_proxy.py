@@ -24,6 +24,16 @@ BUNDLED_SPEC = json.loads(
 )
 
 
+# Localhost HTTP must not go through the system proxy (macOS system proxy
+# settings leak into requests via trust_env and return 502 for 127.0.0.1).
+session = requests.Session()
+session.trust_env = False
+
+
+def _get(url: str, **kwargs):
+    return session.get(url, **kwargs)
+
+
 class _StubAICP(BaseHTTPRequestHandler):
     """Stands in for the real AICP: serves its spec + two stub tool endpoints."""
 
@@ -62,21 +72,26 @@ def bridge_stack():
         "AICP_URL": f"http://127.0.0.1:{stub.server_port}",
         "CPTR_BRIDGE_PORT": str(BRIDGE_PORT),
     }
+    log = open("bridge-test.log", "w")
     proc = subprocess.Popen(
         [sys.executable, "-m", "cptr_bridge.server"],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log,
+        stderr=log,
     )
     try:
         for _ in range(100):
             try:
-                if requests.get(f"{BRIDGE}/health", timeout=1).status_code == 200:
+                if _get(f"{BRIDGE}/health", timeout=1).status_code == 200:
                     break
             except requests.RequestException:
-                time.sleep(0.2)
+                pass
+            time.sleep(0.2)
         else:
-            raise RuntimeError("bridge did not come up")
+            raise RuntimeError(
+                "bridge did not come up; log: "
+                + Path("bridge-test.log").read_text(errors="replace")[-2000:]
+            )
         yield
     finally:
         proc.terminate()
@@ -88,7 +103,7 @@ def bridge_stack():
 
 
 def test_openapi_spec_is_valid_and_has_six_tools(bridge_stack):
-    response = requests.get(f"{BRIDGE}/openapi.json", timeout=5)
+    response = _get(f"{BRIDGE}/openapi.json", timeout=5)
     assert response.status_code == 200
     spec = response.json()
     assert spec["openapi"].startswith("3.")
@@ -98,13 +113,13 @@ def test_openapi_spec_is_valid_and_has_six_tools(bridge_stack):
 
 
 def test_proxy_get_tool(bridge_stack):
-    response = requests.get(f"{BRIDGE}/agent/today", timeout=5)
+    response = _get(f"{BRIDGE}/agent/today", timeout=5)
     assert response.status_code == 200
     assert response.json() == {"ok": True, "source": "stub-aicp"}
 
 
 def test_proxy_post_tool(bridge_stack):
-    response = requests.post(
+    response = session.post(
         f"{BRIDGE}/agent/context-brief", json={"text": "status?"}, timeout=5
     )
     assert response.status_code == 200
@@ -112,5 +127,5 @@ def test_proxy_post_tool(bridge_stack):
 
 
 def test_proxy_passes_through_upstream_404(bridge_stack):
-    response = requests.get(f"{BRIDGE}/agent/nope", timeout=5)
+    response = _get(f"{BRIDGE}/agent/nope", timeout=5)
     assert response.status_code == 404

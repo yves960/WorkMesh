@@ -5,5 +5,3 @@ Exposes AICP's 6 read-only /agent/* tools on port 8766 so cptr
 """
 
 __version__ = "0.1.0"
-
-from .server import app, main  # noqa: F401

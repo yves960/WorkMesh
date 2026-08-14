@@ -54,7 +54,9 @@ def _transform_spec(spec: dict) -> dict:
 async def _load_spec() -> dict:
     """Pull the spec from AICP live; fall back to the bundled snapshot."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        # trust_env=False: never route localhost AICP calls through the
+        # system proxy (macOS scproxy otherwise hijacks 127.0.0.1 traffic).
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
             response = await client.get(f"{AICP_URL}/openwebui/openapi.json")
             response.raise_for_status()
             return _transform_spec(response.json())
@@ -82,7 +84,7 @@ async def proxy_to_aicp(path: str, request: Request) -> Response:
     target = f"{AICP_URL}/{path}"
     body = await request.body()
     headers = {"content-type": request.headers.get("content-type", "application/json")}
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
         upstream = await client.request(
             request.method,
             target,
