@@ -137,13 +137,15 @@ def start_loop(req: LoopRunRequest) -> dict[str, Any]:
     record["_process"] = process
     _ACTIVE_LOOPS[run_id] = record
     _persist_start(run_id, req, cmd)
+    snapshot = _snapshot(run_id)  # captured before the reaper can flip status
     threading.Thread(
         target=_reap, args=(run_id, process), daemon=True, name=f"loop-reap-{run_id}"
     ).start()
-    return _snapshot(run_id)
+    return snapshot
 
 
 def _load_run_from_db(run_id: str) -> dict[str, Any] | None:
+    init_db()
     with connect() as conn:
         row = conn.execute(
             "SELECT run_id, workspace_id, project_path, profile_name, issue_ref,"
