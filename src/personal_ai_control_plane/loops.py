@@ -2,6 +2,18 @@
 
 Endpoints in loop_routes.py are internal (mounted on the FastAPI main app, NOT
 in the curated openwebui/openapi.json spec). Open WebUI agents must not see them.
+
+ForgeLoop CLI contract (v0.1.8, verified against ForgeLoop/src/cli_parser.py):
+
+    loop run (--test T | --target TARGET) [--max-iterations N]
+             [--agent-command PATH] [--agent-protocol P] [--agent-arg A ...]
+             [--maven PATH] [--require-clean] <profile-name>
+    loop {status|cleanup} <run_id> ...
+    loop config ... | loop run-config ...
+
+The profile name is a REQUIRED positional; there is no --profile, --workspace,
+--issue, or --dry-run flag. tests/test_loop_command_against_real_cli.py guards
+this contract (CLI existence via `loop --help`; argv shape via mocked Popen).
 """
 
 from __future__ import annotations
@@ -21,6 +33,9 @@ from .models import LoopCallbackRequest, LoopRunRequest
 # stripped from every snapshot.
 _ACTIVE_LOOPS: dict[str, dict[str, Any]] = {}
 
+#: Safety cap so a misbehaving profile can never loop unbounded on the real CLI.
+FORGELOOP_MAX_ITERATIONS = 5
+
 
 class UnknownLoopRun(ControlPlaneError):
     """Raised when a callback references a run that was never started here."""
@@ -31,21 +46,40 @@ def loop_executable() -> str:
 
 
 def _loop_command(req: LoopRunRequest, executable: str) -> list[str]:
-    cmd = [
+    """Build argv for the REAL ForgeLoop CLI (`loop run`, see module docstring).
+
+    Mapping decisions (recorded for posterity):
+    - profile_name -> REQUIRED positional (ForgeLoop has no --profile flag;
+      missing profile is rejected instead of spawning a doomed process).
+    - workspace_id -> NOT passed; ForgeLoop discovers state from the working
+      directory. AICP only keeps it in its own registry/DB.
+    - project_path -> NOT an argv element; used as Popen cwd so ForgeLoop runs
+      inside the project it operates on.
+    - issue_ref -> `--target`. ForgeLoop has no --issue flag AND requires the
+      --test|--target group, so --target is the only slot for it (semantic
+      mismatch recorded; see test_loop_command_against_real_cli.py).
+    - dry_run -> ForgeLoop has NO --dry-run. dry_run=True maps to
+      `--max-iterations 1` (one bounded pass in a scratch worktree — this is
+      NOT a no-op dry-run; the coding agent still runs once).
+    - --max-iterations is always present and capped at
+      FORGELOOP_MAX_ITERATIONS (5).
+    """
+    profile = (req.profile_name or "").strip()
+    if not profile:
+        raise ControlPlaneError(
+            "profile_name is required: ForgeLoop takes the profile as a"
+            " positional argument (there is no --profile flag)"
+        )
+    iterations = 1 if req.dry_run else FORGELOOP_MAX_ITERATIONS
+    return [
         executable,
         "run",
-        "--workspace",
-        req.workspace_id,
-        "--project",
-        req.project_path,
-        "--issue",
+        "--target",
         req.issue_ref,
+        "--max-iterations",
+        str(iterations),
+        profile,
     ]
-    if req.profile_name:
-        cmd += ["--profile", req.profile_name]
-    if req.dry_run:
-        cmd.append("--dry-run")
-    return cmd
 
 
 def _snapshot(run_id: str) -> dict[str, Any]:
@@ -130,6 +164,8 @@ def start_loop(req: LoopRunRequest) -> dict[str, Any]:
             stdin=subprocess.DEVNULL,
             shell=False,
             start_new_session=True,
+            cwd=os.path.expanduser(req.project_path),  # ForgeLoop discovers the
+            # project from its working directory; there is no --workspace flag.
         )
     except OSError as exc:
         raise ControlPlaneError(f"failed to launch loop run: {exc}") from exc

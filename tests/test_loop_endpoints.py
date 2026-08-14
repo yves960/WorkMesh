@@ -61,17 +61,21 @@ def test_loop_run_returns_run_id_without_blocking(monkeypatch, tmp_path):
     assert FakePopen.last_cmd is not None
     assert FakePopen.last_cmd[0] == "loop"
     assert FakePopen.last_cmd[1] == "run"
-    assert "--dry-run" in FakePopen.last_cmd
-    assert "--workspace" in FakePopen.last_cmd
+    assert "--workspace" not in FakePopen.last_cmd  # ForgeLoop has no such flag
+    assert FakePopen.last_cmd[-1] == "forger"  # profile is a positional
+    assert FakePopen.last_cmd[FakePopen.last_cmd.index("--max-iterations") + 1] == "1"
+    assert FakePopen.last_cmd[FakePopen.last_cmd.index("--target") + 1] == "MUL-42"
 
 
-def test_loop_run_without_dry_run_omits_flag(monkeypatch, tmp_path):
+def test_loop_run_without_dry_run_uses_capped_iterations(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
 
     r = c.post("/api/v1/loop/run", json=_run_payload(dry_run=False))
 
     assert r.status_code == 200
-    assert "--dry-run" not in (FakePopen.last_cmd or [])
+    cmd = FakePopen.last_cmd or []
+    assert "--dry-run" not in cmd  # ForgeLoop CLI has no --dry-run flag
+    assert cmd[cmd.index("--max-iterations") + 1] == "5"  # FORGELOOP_MAX_ITERATIONS
 
 
 def test_loop_status_lists_active_run(monkeypatch, tmp_path):
