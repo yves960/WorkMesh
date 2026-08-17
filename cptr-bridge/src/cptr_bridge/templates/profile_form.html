@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ '编辑' if mode == 'edit' else '新建' }} Profile · cptr-bridge Admin{% endblock %}
+{% block content %}
+<h1>{{ '编辑 Profile' if mode == 'edit' else '新建 Profile' }}</h1>
+<p class="sub">字段与 ForgeLoop profile.json schema 一致；列表字段每行一个。</p>
+<form method="post"
+      action="{{ '/admin/profiles/' + name + '/edit' if mode == 'edit' else '/admin/profiles/new' }}">
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>name</label>
+        <input type="text" name="name" value="{{ name }}" required
+               pattern="[a-z0-9][a-z0-9-]{0,63}">
+        <div class="hint">小写字母/数字/连字符；也是 profile 目录名（重命名 = 新建目录并迁移）</div>
+      </div>
+      <div>
+        <label>maxIterations</label>
+        <input type="number" name="maxIterations" min="1" value="{{ profile.maxIterations or 10 }}">
+      </div>
+    </div>
+    <label>description（任务模板/说明）</label>
+    <input type="text" name="description" value="{{ profile.description or '' }}">
+    <label>allowedPathSuffixes（允许改动路径，glob 后缀）</label>
+    <textarea name="allowedPathSuffixes">{{ (profile.allowedPathSuffixes or []) | join('\n') }}</textarea>
+    <label>forbiddenAddedPatterns（bypass 禁止模式）</label>
+    <textarea name="forbiddenAddedPatterns">{{ (profile.forbiddenAddedPatterns or []) | join('\n') }}</textarea>
+    <label>requiredPaths（可选，必须存在的路径）</label>
+    <textarea name="requiredPaths">{{ (profile.requiredPaths or []) | join('\n') }}</textarea>
+    <h2>Verifier</h2>
+    <div class="row">
+      <div>
+        <label>type</label>
+        <select name="verifierType">
+          <option value="">（无）</option>
+          <option value="maven" {{ 'selected' if profile.verifier and profile.verifier.type == 'maven' }}>maven</option>
+          <option value="java-ut" {{ 'selected' if profile.verifier and profile.verifier.type == 'java-ut' }}>java-ut</option>
+        </select>
+      </div>
+      <div>
+        <label>passReason</label>
+        <input type="text" name="passReason" value="{{ profile.verifier.passReason if profile.verifier else '' }}">
+      </div>
+      <div>
+        <label>failReason</label>
+        <input type="text" name="failReason" value="{{ profile.verifier.failReason if profile.verifier else '' }}">
+      </div>
+    </div>
+    <label>verifier arguments（每行一个）</label>
+    <textarea name="verifierArguments">{{ (profile.verifier.arguments or []) | join('\n') if profile.verifier }}</textarea>
+    <label><input type="checkbox" name="requireVerifierPass" value="1"
+        {{ 'checked' if profile.completion and profile.completion.requireVerifierPass }}
+        style="width:auto"> completion.requireVerifierPass（完成必须 verifier 通过）</label>
+  </div>
+  <button class="btn" type="submit">保存</button>
+  <a class="btn secondary" href="/admin/profiles">取消</a>
+</form>
+{% endblock %}

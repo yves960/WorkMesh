@@ -19,6 +19,8 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
+from .admin import router as admin_router
+
 AICP_URL = os.environ.get("AICP_URL", "http://127.0.0.1:8765").rstrip("/")
 BRIDGE_PORT = int(os.environ.get("CPTR_BRIDGE_PORT", "8766"))
 TOOL_PATH_PREFIX = "/agent/"
@@ -72,6 +74,11 @@ async def openapi_spec() -> JSONResponse:
 @app.get("/health", include_in_schema=False)
 async def health() -> dict:
     return {"status": "ok", "a_icp_url": AICP_URL}
+
+
+# Admin UI (profiles / routing / forge-loop) must be registered BEFORE the
+# catch-all proxy below, otherwise /admin/* would be forwarded to AICP.
+app.include_router(admin_router)
 
 
 @app.api_route(

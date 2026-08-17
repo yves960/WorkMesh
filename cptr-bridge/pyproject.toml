@@ -12,6 +12,8 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "httpx>=0.27",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -27,4 +29,4 @@ cptr-bridge = "cptr_bridge.server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-cptr_bridge = ["openapi.json"]
+cptr_bridge = ["openapi.json", "templates/*.html"]

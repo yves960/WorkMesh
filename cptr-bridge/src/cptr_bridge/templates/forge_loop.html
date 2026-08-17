@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}ForgeLoop 配置 · cptr-bridge Admin{% endblock %}
+{% block content %}
+<h1>ForgeLoop 全局配置</h1>
+<p class="sub">读写 config.json（{{ current.configPath or '未配置 CTR_LOOP_CONFIG' }}），保留其余键不动。</p>
+{% if config_error %}<div class="flash err">{{ config_error }}</div>{% endif %}
+<div class="card">
+  <form method="post" action="/admin/forge-loop">
+    <label>hooks.onComplete webhook URL（留空 = 禁用）</label>
+    <input type="url" name="webhookUrl" placeholder="https://…" value="{{ current.webhookUrl }}">
+    <div class="hint">必须是 http:// 或 https:// 开头</div>
+    <label>globalMaxIterations</label>
+    <input type="number" name="globalMaxIterations" min="1" value="{{ current.globalMaxIterations }}">
+    <label><input type="checkbox" name="dryRunDefault" value="1" {{ 'checked' if current.dryRunDefault }}
+        style="width:auto"> dryRunDefault（默认 dry-run）</label>
+    <p style="margin-top:14px">
+      <button class="btn" type="submit">保存配置</button>
+    </p>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Profiles · cptr-bridge Admin{% endblock %}
+{% block content %}
+<h1>ForgeLoop Profiles</h1>
+<p class="sub">直接读写 profiles/&lt;name&gt;/profile.json，保存前按 profile_store.py 规则校验。</p>
+{% if profiles_error %}
+  <div class="flash err">{{ profiles_error }}</div>
+{% endif %}
+<p><a class="btn" href="/admin/profiles/new">＋ 新建 Profile</a></p>
+<div class="card">
+  <table>
+    <tr><th>name</th><th>verifier</th><th>maxIterations</th><th>allowed</th><th></th></tr>
+    {% for p in profiles %}
+    <tr>
+      <td><a href="/admin/profiles/{{ p.name }}/edit"><b>{{ p.name }}</b></a>
+          {% if p.error %}<div class="hint" style="color:var(--err)">JSON 解析失败: {{ p.error }}</div>{% endif %}</td>
+      <td>{{ p.data.verifier.type if p.data and p.data.verifier else '—' }}</td>
+      <td>{{ p.data.maxIterations if p.data and p.data.maxIterations is defined else '—' }}</td>
+      <td class="hint">{{ (p.data.allowedPathSuffixes or []) | join(', ') if p.data else '—' }}</td>
+      <td>
+        <form method="post" action="/admin/profiles/{{ p.name }}/delete"
+              onsubmit="return confirm('删除 profile {{ p.name }}？')">
+          <button class="btn danger" type="submit">删除</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="hint">（暂无 profile）</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

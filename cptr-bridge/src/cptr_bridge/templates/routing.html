@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}路由策略 · cptr-bridge Admin{% endblock %}
+{% block content %}
+<h1>WorkMesh 路由策略</h1>
+<p class="sub">意图关键词 → profile 映射，存储于 cptr-bridge state 目录的 routing.json。</p>
+<div class="card">
+  <h2>现有规则</h2>
+  <table>
+    <tr><th>#</th><th>keywords</th><th>profile</th><th></th></tr>
+    {% for rule in rules %}
+    <tr>
+      <td>{{ loop.index0 }}</td>
+      <td>
+        {% for kw in rule.keywords %}<span class="tag">{{ kw }}</span>{% endfor %}
+      </td>
+      <td>
+        {% if rule.missing %}<span class="tag missing">{{ rule.profile }}（不存在）</span>
+        {% else %}<code>{{ rule.profile }}</code>{% endif %}
+      </td>
+      <td>
+        <form method="post" action="/admin/routing/delete/{{ loop.index0 }}">
+          <button class="btn danger" type="submit">删除</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="hint">（暂无规则）</td></tr>
+    {% endfor %}
+  </table>
+</div>
+<div class="card">
+  <h2>添加规则</h2>
+  <form method="post" action="/admin/routing/add">
+    <label>keywords（每行一个，命中任一即路由）</label>
+    <textarea name="keywords" required></textarea>
+    <label>profile</label>
+    <select name="profile" required>
+      {% for name in profiles %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
+    </select>
+    <p style="margin-top:14px"><button class="btn" type="submit">添加规则</button></p>
+  </form>
+</div>
+{% endblock %}

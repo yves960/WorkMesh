@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}cptr-bridge Admin{% endblock %}</title>
+<style>
+  :root { --bg:#f5f6f8; --panel:#fff; --line:#e3e6ea; --ink:#1c2430; --muted:#68738a;
+          --accent:#2f6fed; --ok:#0c8a4d; --err:#c0392b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.6 -apple-system,"PingFang SC","Segoe UI",sans-serif;
+         background:var(--bg); color:var(--ink); }
+  .layout { display:flex; min-height:100vh; }
+  nav { width:210px; background:#171e2b; color:#cfd6e4; padding:18px 0; flex-shrink:0; }
+  nav .brand { color:#fff; font-weight:700; padding:0 18px 14px; border-bottom:1px solid #2a3447; }
+  nav a { display:block; color:#cfd6e4; text-decoration:none; padding:9px 18px; }
+  nav a:hover, nav a.active { background:#223049; color:#fff; }
+  main { flex:1; padding:26px 34px; max-width:980px; }
+  h1 { font-size:22px; margin:0 0 4px; } h2 { font-size:16px; }
+  .sub { color:var(--muted); margin:0 0 20px; font-size:13px; }
+  .flash { padding:10px 14px; border-radius:8px; margin-bottom:18px; font-size:14px; }
+  .flash.ok { background:#e6f5ec; color:var(--ok); border:1px solid #bfe5cf; }
+  .flash.err { background:#fbeae7; color:var(--err); border:1px solid #f0c8c0; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+          padding:18px 20px; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; }
+  label { display:block; font-weight:600; margin:12px 0 4px; font-size:13px; }
+  input[type=text], input[type=number], input[type=url], select, textarea {
+    width:100%; padding:7px 10px; border:1px solid var(--line); border-radius:6px;
+    font:inherit; background:#fff; }
+  textarea { min-height:74px; font-family:ui-monospace,Menlo,monospace; font-size:13px; }
+  .hint { color:var(--muted); font-size:12px; margin-top:3px; }
+  .btn { display:inline-block; background:var(--accent); color:#fff; border:0; cursor:pointer;
+         padding:8px 16px; border-radius:6px; font:inherit; text-decoration:none; }
+  .btn.secondary { background:#eef1f6; color:var(--ink); border:1px solid var(--line); }
+  .btn.danger { background:#fff; color:var(--err); border:1px solid #f0c8c0; padding:4px 10px; }
+  .row { display:flex; gap:16px; } .row > div { flex:1; }
+  .tag { display:inline-block; background:#eef1f6; border-radius:4px; padding:1px 7px;
+         margin:1px 2px; font-size:12.5px; }
+  .tag.missing { background:#fbeae7; color:var(--err); }
+  code { background:#eef1f6; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <nav>
+    <div class="brand">cptr-bridge</div>
+    <a href="/admin/profiles">Profiles</a>
+    <a href="/admin/routing">路由策略</a>
+    <a href="/admin/forge-loop">ForgeLoop 配置</a>
+  </nav>
+  <main>
+    {% if flash_msg %}
+      <div class="flash {{ flash_kind }}">{{ flash_msg }}</div>
+    {% endif %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>
