@@ -26,6 +26,33 @@ curl http://127.0.0.1:8766/agent/today          # 代理到 AICP
 
 环境变量：`AICP_URL`（默认 `http://127.0.0.1:8765`）、`CPTR_BRIDGE_PORT`（默认 `8766`）。
 
+## Admin UI
+
+服务端渲染的配置后台（Jinja2 + 纯 HTML，无前端框架），三个板块：
+
+| 板块 | URL | 作用 |
+| --- | --- | --- |
+| Profiles | `/admin/profiles` | ForgeLoop profile.json 增删改查，保存前按 `profile_store.py` 规则校验 |
+| 路由策略 | `/admin/routing` | 意图关键词 → profile 映射，存 `state/routing.json`，首次访问自动写入 5 条默认规则 |
+| ForgeLoop 配置 | `/admin/forge-loop` | `config.json` 的 `hooks.onComplete` webhook、`globalMaxIterations`、`dryRunDefault`，保留其余键 |
+
+Admin 环境变量（都不硬编码路径）：
+
+- `CTR_PROFILES_DIR` — ForgeLoop profiles 目录（必填，否则 Profiles 页提示未配置）
+- `CTR_FORGELOOP_SRC` — ForgeLoop `src/` 目录（可选；设置后用真实 `profile_store.parse_engineering_profile` 二次校验）
+- `CTR_STATE_DIR` — bridge 状态目录（默认 `~/.openclaw/cptr-bridge/state`）
+- `CTR_LOOP_CONFIG` — ForgeLoop 全局配置路径（默认 `~/.loop-engineering/config.json`）
+
+```bash
+# 带 Admin 启动示例
+CTR_PROFILES_DIR="$HOME/projects/self/ForgeLoop/profiles" \
+CTR_FORGELOOP_SRC="$HOME/projects/self/ForgeLoop/src" \
+python -m cptr_bridge.server
+# 浏览器打开 http://127.0.0.1:8766/admin/profiles
+```
+
+注意：admin 路由注册在 AICP 透传代理之前，不影响 `/openapi.json` 与 `/agent/*` 工具链路。
+
 ## 注册到 cptr
 
 1. 保持 bridge 运行（`python -m cptr_bridge.server`）。
