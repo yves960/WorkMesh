@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .db import connect, init_db, utcnow
-from .errors import ControlPlaneError
+from .errors import ControlPlaneError, MissingTargetError
 from .models import ExecutionRecord, LoopCallbackRequest, LoopRunRequest
 
 # run_id -> run record. Keys with a leading "_" are process bookkeeping and are
@@ -41,6 +41,12 @@ FORGELOOP_MAX_ITERATIONS = 5
 
 class UnknownLoopRun(ControlPlaneError):
     """Raised when a callback references a run that was never started here."""
+
+
+def _validate_request(req: LoopRunRequest) -> None:
+    """A loop run is meaningless without a target; reject before any spawn."""
+    if not (req.target or "").strip():
+        raise MissingTargetError("target is required")
 
 
 def loop_executable() -> str:
@@ -63,10 +69,10 @@ def _loop_command(req: LoopRunRequest, executable: str, execution_id: str) -> li
       directory. AICP only keeps it in its own registry/DB.
     - project_path -> NOT an argv element; used as Popen cwd so ForgeLoop runs
       inside the project it operates on.
-    - issue_ref -> `--target`. ForgeLoop has no --issue flag AND requires the
-      --test|--target group, so --target is the only slot for it (semantic
-      mismatch recorded; see test_loop_command_against_real_cli.py). A missing
-      issue_ref is rejected: target-less Discovery runs are P2, not P1.
+    - target -> `--target`. ForgeLoop has no --issue flag and requires the
+      --test|--target group; the explicit target is the execution goal and is
+      mandatory. issue_ref, when present, is metadata stored on
+      ExecutionRecord only and NEVER leaks into the argv.
     - execution_id -> `--execution-id`; WorkMesh owns the id so the ForgeLoop
       run.json / worktree branch / webhook payload can correlate back.
     - dry_run -> ForgeLoop has NO --dry-run. dry_run=True maps to
@@ -81,11 +87,7 @@ def _loop_command(req: LoopRunRequest, executable: str, execution_id: str) -> li
             "profile_name is required: ForgeLoop takes the profile as a"
             " positional argument (there is no --profile flag)"
         )
-    if not (req.issue_ref or "").strip():
-        raise ControlPlaneError(
-            "issue_ref is required: ForgeLoop has no target-less run mode yet"
-            " (Discovery runs land in P2)"
-        )
+    _validate_request(req)
     execution_id = (execution_id or "").strip()
     if not execution_id:
         raise ControlPlaneError("execution_id is required for every loop run")
@@ -94,7 +96,7 @@ def _loop_command(req: LoopRunRequest, executable: str, execution_id: str) -> li
         executable,
         "run",
         "--target",
-        req.issue_ref,
+        req.target.strip(),
         "--max-iterations",
         str(iterations),
         "--execution-id",
@@ -139,7 +141,7 @@ def _persist_start(
         execution_id=execution_id,
         project_path=req.project_path,
         profile_name=req.profile_name,
-        target=req.issue_ref,
+        target=req.target,
         issue_ref=req.issue_ref,
         status="running",
         created_at=now,
@@ -187,6 +189,7 @@ def _persist_start(
 
 def start_loop(req: LoopRunRequest) -> dict[str, Any]:
     """Launch `loop run` as a detached subprocess and return immediately."""
+    _validate_request(req)
     executable = loop_executable()
     if shutil.which(executable) is None:
         raise ControlPlaneError(
@@ -205,6 +208,7 @@ def start_loop(req: LoopRunRequest) -> dict[str, Any]:
         "workspace_id": req.workspace_id,
         "project_path": req.project_path,
         "profile_name": req.profile_name,
+        "target": req.target,
         "issue_ref": req.issue_ref,
         "dry_run": req.dry_run,
         "command": cmd,

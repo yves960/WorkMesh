@@ -50,6 +50,7 @@ def _run_payload(**overrides) -> dict[str, Any]:
         "workspace_id": "ws-1",
         "project_path": "~/projects/self/WorkMesh",
         "profile_name": "sast-fixer",
+        "target": "com.demo.SastServiceTest",
         "issue_ref": "MUL-42",
         "dry_run": True,
     }
@@ -85,7 +86,7 @@ def test_explicit_execution_id_is_adopted(monkeypatch, tmp_path):
         "exec-20260818-cafe01",
         "~/projects/self/WorkMesh",
         "sast-fixer",
-        "MUL-42",
+        "com.demo.SastServiceTest",
         "MUL-42",
         "running",
     )

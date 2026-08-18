@@ -12,7 +12,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from .http_errors import CONTROL_ERRORS, raise_http
-from .loops import UnknownLoopRun, active_loops, record_callback, start_loop
+from .loops import (
+    UnknownLoopRun,
+    _validate_request,
+    active_loops,
+    record_callback,
+    start_loop,
+)
 from .models import LoopCallbackRequest, LoopRunRequest
 
 router = APIRouter()
@@ -22,6 +28,7 @@ router = APIRouter()
 def loop_run(payload: LoopRunRequest) -> dict[str, Any]:
     """Start `loop run` as a detached subprocess. Returns run_id immediately."""
     try:
+        _validate_request(payload)  # missing target -> 400, never a doomed spawn
         return start_loop(payload)
     except CONTROL_ERRORS as exc:
         raise_http(exc)

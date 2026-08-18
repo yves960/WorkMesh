@@ -1,4 +1,6 @@
 from fastapi import FastAPI, Query
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -54,6 +56,24 @@ app.add_middleware(
 )
 app.include_router(agent_router)
 app.include_router(loop_router)
+
+
+async def _validation_error_handler(request, exc: RequestValidationError):
+    """Return 400 (not 422) when a loop run lacks its required target.
+
+    Everything else keeps FastAPI's default 422 validation response.
+    """
+    if request.url.path == "/api/v1/loop/run":
+        for err in exc.errors():
+            if err.get("loc", ())[-1:] == ("target",) and err.get("type") in (
+                "missing",
+                "string_type",
+            ):
+                return JSONResponse(status_code=400, content={"detail": "target is required"})
+    return await request_validation_exception_handler(request, exc)
+
+
+app.add_exception_handler(RequestValidationError, _validation_error_handler)
 
 
 @app.get("/", include_in_schema=False)

@@ -42,6 +42,7 @@ def _run_payload(**overrides) -> dict[str, Any]:
         "workspace_id": "ws-1",
         "project_path": "~/projects/self/WorkMesh",
         "profile_name": "forger",
+        "target": "com.demo.UserServiceTest",
         "issue_ref": "MUL-42",
         "dry_run": True,
     }
@@ -66,7 +67,9 @@ def test_loop_run_returns_run_id_without_blocking(monkeypatch, tmp_path):
     assert "--workspace" not in FakePopen.last_cmd  # ForgeLoop has no such flag
     assert FakePopen.last_cmd[-1] == "forger"  # profile is a positional
     assert FakePopen.last_cmd[FakePopen.last_cmd.index("--max-iterations") + 1] == "1"
-    assert FakePopen.last_cmd[FakePopen.last_cmd.index("--target") + 1] == "MUL-42"
+    assert FakePopen.last_cmd[FakePopen.last_cmd.index("--target") + 1] == (
+        "com.demo.UserServiceTest"
+    )
     assert (
         FakePopen.last_cmd[FakePopen.last_cmd.index("--execution-id") + 1]
         == body["execution_id"]
@@ -158,18 +161,27 @@ def test_loop_callback_unknown_run_id_returns_404(monkeypatch, tmp_path):
     assert r.status_code == 404
 
 
-def test_loop_run_without_issue_ref_returns_400(monkeypatch, tmp_path):
-    # issue_ref is schema-optional now (Discovery runs are P2), but spawning
-    # without a --target would only produce a ForgeLoop argparse error.
+def test_loop_run_without_target_returns_400(monkeypatch, tmp_path):
+    # target is the required ForgeLoop execution input; a body without it is
+    # rejected with a clear 400 instead of a doomed spawn.
     c = _client(monkeypatch, tmp_path)
 
     payload = _run_payload()
-    del payload["issue_ref"]
+    del payload["target"]
 
     r = c.post("/api/v1/loop/run", json=payload)
 
     assert r.status_code == 400
-    assert "issue_ref" in r.json()["detail"]
+    assert r.json()["detail"] == "target is required"
+
+
+def test_loop_run_target_none_returns_400(monkeypatch, tmp_path):
+    c = _client(monkeypatch, tmp_path)
+
+    r = c.post("/api/v1/loop/run", json=_run_payload(target=None))
+
+    assert r.status_code == 400
+    assert r.json()["detail"] == "target is required"
 
 
 def test_loop_run_missing_executable_returns_400(monkeypatch, tmp_path):

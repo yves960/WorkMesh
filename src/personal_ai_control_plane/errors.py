@@ -19,3 +19,7 @@ class WorkspaceSelectionRequired(ControlPlaneError):
 
 class ContextNotFound(ControlPlaneError):
     pass
+
+
+class MissingTargetError(ControlPlaneError):
+    """Raised when a loop run request carries no usable ForgeLoop target."""

@@ -61,9 +61,12 @@ class LoopRunRequest(BaseModel):
     workspace_id: str = Field(min_length=1)
     project_path: str = Field(min_length=1)
     profile_name: str | None = None
-    # issue_ref is optional at the schema level so future target-less
-    # (Discovery) runs validate; the spawn path still requires it today
-    # because ForgeLoop has no target-less run mode yet (P2).
+    # ForgeLoop execution target (e.g. "com.example.MyTest#testFoo" or a
+    # Maven --target value). REQUIRED: a run without a target is meaningless
+    # and ForgeLoop's --test|--target group would reject it anyway.
+    target: str = Field(min_length=1)
+    # Optional Multica issue reference. Metadata ONLY: stored on
+    # ExecutionRecord, never part of the ForgeLoop argv.
     issue_ref: str | None = None
     # Optional caller-supplied execution id; auto-generated as
     # exec-YYYYMMDD-XXXXXX when omitted.

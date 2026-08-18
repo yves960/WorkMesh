@@ -58,6 +58,7 @@ def _seed_loop(monkeypatch, tmp_path) -> str:
             "workspace_id": "ws-1",
             "project_path": "~/projects/self/WorkMesh",
             "profile_name": "sast-fixer",  # required positional in ForgeLoop CLI
+            "target": "com.demo.SastServiceTest",  # required ForgeLoop target
             "issue_ref": "MUL-7",
         },
     ).json()["run_id"]

@@ -49,6 +49,7 @@ def _req(**overrides) -> LoopRunRequest:
         "workspace_id": "ws-1",
         "project_path": "~/projects/demo",
         "profile_name": "sast-fixer",
+        "target": "com.demo.SastServiceTest",
         "issue_ref": "MUL-42",
         "dry_run": True,
     }
@@ -65,7 +66,7 @@ def test_dry_run_argv_matches_real_cli_shape():
         "loop",
         "run",
         "--target",
-        "MUL-42",
+        "com.demo.SastServiceTest",
         "--max-iterations",
         "1",
         "--execution-id",
@@ -89,13 +90,10 @@ def test_non_dry_run_caps_iterations_at_safety_limit():
     assert loops.FORGELOOP_MAX_ITERATIONS <= 5
 
 
-def test_missing_issue_ref_is_rejected_not_spawned():
-    # issue_ref is schema-optional (Discovery runs are P2) but a spawn without
-    # a target would only produce a doomed ForgeLoop argparse error.
+def test_missing_target_is_rejected_not_spawned():
+    # target is schema-required; guard direct callers passing whitespace too.
     with pytest.raises(ControlPlaneError):
-        loops._loop_command(_req(issue_ref=None), "loop", EXEC_ID)
-    with pytest.raises(ControlPlaneError):
-        loops._loop_command(_req(issue_ref="  "), "loop", EXEC_ID)
+        loops._loop_command(_req(target="  "), "loop", EXEC_ID)
 
 
 def test_missing_execution_id_is_rejected_not_spawned():
