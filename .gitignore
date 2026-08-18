@@ -10,3 +10,7 @@ data/control-plane.db-*
 build/
 dist/
 *.egg-info/
+
+# cptr-bridge runtime & machine-specific launcher
+cptr-bridge/bridge-admin.log
+run-aicp-demo.sh

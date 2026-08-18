@@ -50,18 +50,44 @@ CREATE TABLE IF NOT EXISTS loop_runs (
     workspace_id TEXT NOT NULL,
     project_path TEXT NOT NULL,
     profile_name TEXT,
-    issue_ref TEXT NOT NULL,
+    issue_ref TEXT,
     dry_run INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'running',
     evidence_uri TEXT,
     diff_summary TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    completed_at TEXT
+    completed_at TEXT,
+    execution_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_loop_runs_created ON loop_runs(created_at);
+-- idx_loop_runs_execution_id is created in _migrate_legacy() so legacy
+-- databases get their ALTER TABLE before any index references the column.
+
+CREATE TABLE IF NOT EXISTS execution_records (
+    execution_id TEXT PRIMARY KEY,
+    project_path TEXT NOT NULL,
+    profile_name TEXT,
+    target TEXT,
+    issue_ref TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_records_status ON execution_records(status);
 """
+
+
+def _migrate_legacy(conn: sqlite3.Connection) -> None:
+    """Bring pre-execution_id databases up to date (idempotent)."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(loop_runs)")}
+    if "execution_id" not in columns:
+        conn.execute("ALTER TABLE loop_runs ADD COLUMN execution_id TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_loop_runs_execution_id ON loop_runs(execution_id)"
+    )
 
 
 def utcnow() -> str:
@@ -85,6 +111,7 @@ def connect() -> Iterator[sqlite3.Connection]:
 def init_db() -> Path:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate_legacy(conn)
     return database_path()
 
 

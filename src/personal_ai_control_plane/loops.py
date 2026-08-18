@@ -19,15 +19,17 @@ this contract (CLI existence via `loop --help`; argv shape via mocked Popen).
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import subprocess
 import threading
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from .db import connect, init_db, utcnow
 from .errors import ControlPlaneError
-from .models import LoopCallbackRequest, LoopRunRequest
+from .models import ExecutionRecord, LoopCallbackRequest, LoopRunRequest
 
 # run_id -> run record. Keys with a leading "_" are process bookkeeping and are
 # stripped from every snapshot.
@@ -45,7 +47,13 @@ def loop_executable() -> str:
     return os.getenv("AICP_LOOP_EXECUTABLE", "loop").strip()
 
 
-def _loop_command(req: LoopRunRequest, executable: str) -> list[str]:
+def _new_execution_id() -> str:
+    """exec-YYYYMMDD-XXXXXX (UTC date + 6 lowercase hex chars)."""
+    stamp = datetime.now(UTC).strftime("%Y%m%d")
+    return f"exec-{stamp}-{secrets.token_hex(3)}"
+
+
+def _loop_command(req: LoopRunRequest, executable: str, execution_id: str) -> list[str]:
     """Build argv for the REAL ForgeLoop CLI (`loop run`, see module docstring).
 
     Mapping decisions (recorded for posterity):
@@ -57,7 +65,10 @@ def _loop_command(req: LoopRunRequest, executable: str) -> list[str]:
       inside the project it operates on.
     - issue_ref -> `--target`. ForgeLoop has no --issue flag AND requires the
       --test|--target group, so --target is the only slot for it (semantic
-      mismatch recorded; see test_loop_command_against_real_cli.py).
+      mismatch recorded; see test_loop_command_against_real_cli.py). A missing
+      issue_ref is rejected: target-less Discovery runs are P2, not P1.
+    - execution_id -> `--execution-id`; WorkMesh owns the id so the ForgeLoop
+      run.json / worktree branch / webhook payload can correlate back.
     - dry_run -> ForgeLoop has NO --dry-run. dry_run=True maps to
       `--max-iterations 1` (one bounded pass in a scratch worktree — this is
       NOT a no-op dry-run; the coding agent still runs once).
@@ -70,6 +81,14 @@ def _loop_command(req: LoopRunRequest, executable: str) -> list[str]:
             "profile_name is required: ForgeLoop takes the profile as a"
             " positional argument (there is no --profile flag)"
         )
+    if not (req.issue_ref or "").strip():
+        raise ControlPlaneError(
+            "issue_ref is required: ForgeLoop has no target-less run mode yet"
+            " (Discovery runs land in P2)"
+        )
+    execution_id = (execution_id or "").strip()
+    if not execution_id:
+        raise ControlPlaneError("execution_id is required for every loop run")
     iterations = 1 if req.dry_run else FORGELOOP_MAX_ITERATIONS
     return [
         executable,
@@ -78,6 +97,8 @@ def _loop_command(req: LoopRunRequest, executable: str) -> list[str]:
         req.issue_ref,
         "--max-iterations",
         str(iterations),
+        "--execution-id",
+        execution_id,
         profile,
     ]
 
@@ -110,14 +131,26 @@ def _reap(run_id: str, process: subprocess.Popen[bytes]) -> None:
     record["updated_at"] = utcnow()
 
 
-def _persist_start(run_id: str, req: LoopRunRequest, cmd: list[str]) -> None:
+def _persist_start(
+    run_id: str, req: LoopRunRequest, cmd: list[str], execution_id: str
+) -> None:
     now = utcnow()
+    execution = ExecutionRecord(
+        execution_id=execution_id,
+        project_path=req.project_path,
+        profile_name=req.profile_name,
+        target=req.issue_ref,
+        issue_ref=req.issue_ref,
+        status="running",
+        created_at=now,
+        updated_at=now,
+    )
     init_db()
     with connect() as conn:
         conn.execute(
             "INSERT INTO loop_runs (run_id, workspace_id, project_path, profile_name,"
-            " issue_ref, dry_run, status, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)",
+            " issue_ref, dry_run, status, created_at, updated_at, execution_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)",
             (
                 run_id,
                 req.workspace_id,
@@ -127,6 +160,26 @@ def _persist_start(run_id: str, req: LoopRunRequest, cmd: list[str]) -> None:
                 int(req.dry_run),
                 now,
                 now,
+                execution_id,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO execution_records (execution_id, project_path, profile_name,"
+            " target, issue_ref, status, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, 'running', ?, ?)"
+            " ON CONFLICT(execution_id) DO UPDATE SET"
+            " status = 'running', updated_at = excluded.updated_at,"
+            " project_path = excluded.project_path,"
+            " profile_name = excluded.profile_name,"
+            " target = excluded.target, issue_ref = excluded.issue_ref",
+            (
+                execution.execution_id,
+                execution.project_path,
+                execution.profile_name,
+                execution.target,
+                execution.issue_ref,
+                execution.created_at,
+                execution.updated_at,
             ),
         )
     _ = cmd  # command shape is kept in the in-memory snapshot only
@@ -141,11 +194,13 @@ def start_loop(req: LoopRunRequest) -> dict[str, Any]:
             " (set AICP_LOOP_EXECUTABLE to override)"
         )
 
-    cmd = _loop_command(req, executable)
+    execution_id = (req.execution_id or "").strip() or _new_execution_id()
+    cmd = _loop_command(req, executable, execution_id)
     run_id = uuid.uuid4().hex
     now = utcnow()
     record: dict[str, Any] = {
         "run_id": run_id,
+        "execution_id": execution_id,
         "status": "running",
         "workspace_id": req.workspace_id,
         "project_path": req.project_path,
@@ -172,7 +227,7 @@ def start_loop(req: LoopRunRequest) -> dict[str, Any]:
 
     record["_process"] = process
     _ACTIVE_LOOPS[run_id] = record
-    _persist_start(run_id, req, cmd)
+    _persist_start(run_id, req, cmd, execution_id)
     snapshot = _snapshot(run_id)  # captured before the reaper can flip status
     threading.Thread(
         target=_reap, args=(run_id, process), daemon=True, name=f"loop-reap-{run_id}"
@@ -185,8 +240,8 @@ def _load_run_from_db(run_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute(
             "SELECT run_id, workspace_id, project_path, profile_name, issue_ref,"
-            " dry_run, status, evidence_uri, diff_summary, created_at, updated_at"
-            " FROM loop_runs WHERE run_id = ?",
+            " dry_run, status, evidence_uri, diff_summary, created_at, updated_at,"
+            " execution_id FROM loop_runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
     if row is None:
@@ -196,15 +251,54 @@ def _load_run_from_db(run_id: str) -> dict[str, Any] | None:
     return data
 
 
-def record_callback(req: LoopCallbackRequest) -> dict[str, Any]:
-    """Apply a ForgeLoop completion callback: memory dict + one SQLite update."""
-    record = _ACTIVE_LOOPS.get(req.run_id)
+def _load_run_by_execution_id(execution_id: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT run_id, workspace_id, project_path, profile_name, issue_ref,"
+            " dry_run, status, evidence_uri, diff_summary, created_at, updated_at,"
+            " execution_id FROM loop_runs WHERE execution_id = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (execution_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    data["dry_run"] = bool(data.get("dry_run"))
+    return data
+
+
+def _resolve_callback_record(
+    req: LoopCallbackRequest,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve the callback target; execution_id preferred, run_id legacy."""
+    if req.execution_id:
+        for record in _ACTIVE_LOOPS.values():
+            if record.get("execution_id") == req.execution_id:
+                return record["run_id"], record
+        revived = _load_run_by_execution_id(req.execution_id)
+        if revived is None:
+            raise UnknownLoopRun(f"unknown execution_id: {req.execution_id}")
+        _ACTIVE_LOOPS[revived["run_id"]] = revived
+        return revived["run_id"], revived
+    # Legacy correlation key (deprecated): ForgeLoop run_id.
+    record = _ACTIVE_LOOPS.get(req.run_id or "")
     if record is None:
-        revived = _load_run_from_db(req.run_id)
+        revived = _load_run_from_db(req.run_id or "")
         if revived is None:
             raise UnknownLoopRun(f"unknown run_id: {req.run_id}")
         record = revived
-        _ACTIVE_LOOPS[req.run_id] = record
+        _ACTIVE_LOOPS[req.run_id or ""] = record
+    return req.run_id or "", record
+
+
+def record_callback(req: LoopCallbackRequest) -> dict[str, Any]:
+    """Apply a ForgeLoop completion callback: memory dict + SQLite updates.
+
+    Correlation prefers `execution_id` (the stable cross-system key);
+    `run_id` still works for legacy ForgeLoop versions (deprecated).
+    """
+    run_id, record = _resolve_callback_record(req)
 
     now = utcnow()
     record["status"] = req.status
@@ -215,23 +309,25 @@ def record_callback(req: LoopCallbackRequest) -> dict[str, Any]:
     record["completed_at"] = now
     record["updated_at"] = now
 
+    execution_id = record.get("execution_id")
     init_db()
     with connect() as conn:
         conn.execute(
             "INSERT INTO loop_runs (run_id, workspace_id, project_path, profile_name,"
             " issue_ref, dry_run, status, evidence_uri, diff_summary, created_at,"
-            " updated_at, completed_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " updated_at, completed_at, execution_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(run_id) DO UPDATE SET"
             " status = excluded.status, evidence_uri = excluded.evidence_uri,"
             " diff_summary = excluded.diff_summary, profile_name = excluded.profile_name,"
-            " updated_at = excluded.updated_at, completed_at = excluded.completed_at",
+            " updated_at = excluded.updated_at, completed_at = excluded.completed_at,"
+            " execution_id = excluded.execution_id",
             (
-                req.run_id,
+                run_id,
                 record.get("workspace_id") or "",
                 record.get("project_path") or "",
                 req.profile_name or record.get("profile_name"),
-                record.get("issue_ref") or "",
+                record.get("issue_ref"),
                 int(bool(record.get("dry_run"))),
                 req.status,
                 req.evidence_uri,
@@ -239,6 +335,13 @@ def record_callback(req: LoopCallbackRequest) -> dict[str, Any]:
                 record.get("created_at") or now,
                 now,
                 now,
+                execution_id,
             ),
         )
-    return _snapshot(req.run_id)
+        if execution_id:
+            conn.execute(
+                "UPDATE execution_records SET status = ?, updated_at = ?"
+                " WHERE execution_id = ?",
+                (req.status, now, execution_id),
+            )
+    return _snapshot(run_id)

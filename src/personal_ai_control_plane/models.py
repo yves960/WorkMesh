@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RouteRequest(BaseModel):
@@ -61,15 +61,55 @@ class LoopRunRequest(BaseModel):
     workspace_id: str = Field(min_length=1)
     project_path: str = Field(min_length=1)
     profile_name: str | None = None
-    issue_ref: str = Field(min_length=1)
+    # issue_ref is optional at the schema level so future target-less
+    # (Discovery) runs validate; the spawn path still requires it today
+    # because ForgeLoop has no target-less run mode yet (P2).
+    issue_ref: str | None = None
+    # Optional caller-supplied execution id; auto-generated as
+    # exec-YYYYMMDD-XXXXXX when omitted.
+    execution_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Adopt this execution_id instead of generating one",
+    )
     dry_run: bool = True
+
+
+class ExecutionRecord(BaseModel):
+    """One WorkMesh-initiated execution, keyed by execution_id.
+
+    Bridges WorkMesh -> ForgeLoop subprocess -> run.json -> webhook callback.
+    """
+
+    execution_id: str = Field(min_length=1)
+    project_path: str = Field(min_length=1)
+    profile_name: str | None = None
+    target: str | None = None
+    issue_ref: str | None = None
+    status: str = "running"
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class LoopCallbackRequest(BaseModel):
     """ForgeLoop completion callback payload for POST /api/v1/loop/callback."""
 
-    run_id: str = Field(min_length=1)
+    execution_id: str | None = Field(
+        default=None, min_length=1, description="Preferred run correlation key"
+    )
+    run_id: str | None = Field(
+        default=None,
+        min_length=1,
+        deprecated=True,
+        description="Deprecated legacy key; use execution_id",
+    )
     status: Literal["pass", "fail"]
     evidence_uri: str | None = None
     diff_summary: str | None = None
     profile_name: str | None = None
+
+    @model_validator(mode="after")
+    def _require_execution_or_run_id(self) -> LoopCallbackRequest:
+        if not (self.execution_id or self.run_id):
+            raise ValueError("execution_id or run_id is required")
+        return self

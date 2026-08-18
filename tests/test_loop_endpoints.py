@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,7 @@ def test_loop_run_returns_run_id_without_blocking(monkeypatch, tmp_path):
     body = r.json()
     assert body["status"] == "running"
     assert body["run_id"]
+    assert re.fullmatch(r"exec-\d{8}-[0-9a-f]{6}", body["execution_id"])
     assert body["dry_run"] is True
     assert FakePopen.last_cmd is not None
     assert FakePopen.last_cmd[0] == "loop"
@@ -65,6 +67,10 @@ def test_loop_run_returns_run_id_without_blocking(monkeypatch, tmp_path):
     assert FakePopen.last_cmd[-1] == "forger"  # profile is a positional
     assert FakePopen.last_cmd[FakePopen.last_cmd.index("--max-iterations") + 1] == "1"
     assert FakePopen.last_cmd[FakePopen.last_cmd.index("--target") + 1] == "MUL-42"
+    assert (
+        FakePopen.last_cmd[FakePopen.last_cmd.index("--execution-id") + 1]
+        == body["execution_id"]
+    )
 
 
 def test_loop_run_without_dry_run_uses_capped_iterations(monkeypatch, tmp_path):
@@ -88,6 +94,7 @@ def test_loop_status_lists_active_run(monkeypatch, tmp_path):
     body = r.json()
     assert body["count"] == 1
     assert body["active_loops"][0]["run_id"] == run["run_id"]
+    assert body["active_loops"][0]["execution_id"] == run["execution_id"]
     assert body["active_loops"][0]["issue_ref"] == "MUL-42"
 
 
@@ -151,7 +158,9 @@ def test_loop_callback_unknown_run_id_returns_404(monkeypatch, tmp_path):
     assert r.status_code == 404
 
 
-def test_loop_run_missing_required_field_returns_422(monkeypatch, tmp_path):
+def test_loop_run_without_issue_ref_returns_400(monkeypatch, tmp_path):
+    # issue_ref is schema-optional now (Discovery runs are P2), but spawning
+    # without a --target would only produce a ForgeLoop argparse error.
     c = _client(monkeypatch, tmp_path)
 
     payload = _run_payload()
@@ -159,7 +168,8 @@ def test_loop_run_missing_required_field_returns_422(monkeypatch, tmp_path):
 
     r = c.post("/api/v1/loop/run", json=payload)
 
-    assert r.status_code == 422
+    assert r.status_code == 400
+    assert "issue_ref" in r.json()["detail"]
 
 
 def test_loop_run_missing_executable_returns_400(monkeypatch, tmp_path):

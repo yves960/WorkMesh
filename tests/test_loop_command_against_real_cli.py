@@ -9,6 +9,7 @@ Fork-bomb / agent-execution safety: these tests NEVER launch `loop run`.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -55,8 +56,11 @@ def _req(**overrides) -> LoopRunRequest:
     return LoopRunRequest(**base)
 
 
+EXEC_ID = "exec-20260818-beef42"
+
+
 def test_dry_run_argv_matches_real_cli_shape():
-    cmd = loops._loop_command(_req(), "loop")
+    cmd = loops._loop_command(_req(), "loop", EXEC_ID)
     assert cmd == [
         "loop",
         "run",
@@ -64,29 +68,46 @@ def test_dry_run_argv_matches_real_cli_shape():
         "MUL-42",
         "--max-iterations",
         "1",
+        "--execution-id",
+        EXEC_ID,
         "sast-fixer",
     ]
 
 
 def test_no_phantom_flags_from_old_contract():
-    cmd = loops._loop_command(_req(), "loop")
+    cmd = loops._loop_command(_req(), "loop", EXEC_ID)
     for phantom in ("--workspace", "--project", "--issue", "--profile", "--dry-run", "--test"):
         assert phantom not in cmd
     assert cmd[-1] == "sast-fixer"  # profile is the trailing positional
     assert cmd[cmd.index("--max-iterations") + 1] == "1"
+    assert cmd[cmd.index("--execution-id") + 1] == EXEC_ID
 
 
 def test_non_dry_run_caps_iterations_at_safety_limit():
-    cmd = loops._loop_command(_req(dry_run=False), "loop")
+    cmd = loops._loop_command(_req(dry_run=False), "loop", EXEC_ID)
     assert cmd[cmd.index("--max-iterations") + 1] == str(loops.FORGELOOP_MAX_ITERATIONS)
     assert loops.FORGELOOP_MAX_ITERATIONS <= 5
 
 
+def test_missing_issue_ref_is_rejected_not_spawned():
+    # issue_ref is schema-optional (Discovery runs are P2) but a spawn without
+    # a target would only produce a doomed ForgeLoop argparse error.
+    with pytest.raises(ControlPlaneError):
+        loops._loop_command(_req(issue_ref=None), "loop", EXEC_ID)
+    with pytest.raises(ControlPlaneError):
+        loops._loop_command(_req(issue_ref="  "), "loop", EXEC_ID)
+
+
+def test_missing_execution_id_is_rejected_not_spawned():
+    with pytest.raises(ControlPlaneError):
+        loops._loop_command(_req(), "loop", "")
+
+
 def test_missing_profile_is_rejected_not_spawned():
     with pytest.raises(ControlPlaneError):
-        loops._loop_command(_req(profile_name=None), "loop")
+        loops._loop_command(_req(profile_name=None), "loop", EXEC_ID)
     with pytest.raises(ControlPlaneError):
-        loops._loop_command(_req(profile_name="  "), "loop")
+        loops._loop_command(_req(profile_name="  "), "loop", EXEC_ID)
 
 
 def test_start_loop_launches_with_project_cwd(monkeypatch, tmp_path):
@@ -98,9 +119,14 @@ def test_start_loop_launches_with_project_cwd(monkeypatch, tmp_path):
     snap = loops.start_loop(_req(project_path=str(tmp_path / "proj")))
 
     assert snap["status"] == "running"
+    assert re.fullmatch(r"exec-\d{8}-[0-9a-f]{6}", snap["execution_id"])
     assert RecordingPopen.last_kwargs["cwd"] == str(tmp_path / "proj")
     assert RecordingPopen.last_cmd is not None
     assert RecordingPopen.last_cmd[1:3] == ["run", "--target"]
+    assert (
+        RecordingPopen.last_cmd[RecordingPopen.last_cmd.index("--execution-id") + 1]
+        == snap["execution_id"]
+    )
     loops.reset_loops_for_tests()
 
 
@@ -134,7 +160,7 @@ def test_generated_flags_exist_in_real_run_help():
     )
     out, _err = proc.communicate(timeout=60)
     assert proc.returncode == 0
-    for flag in ("--target", "--max-iterations", "profile"):
+    for flag in ("--target", "--max-iterations", "--execution-id", "profile"):
         assert flag.encode() in out
     assert b"--dry-run" not in out  # confirms our dry-run mapping decision
     assert b"--workspace" not in out

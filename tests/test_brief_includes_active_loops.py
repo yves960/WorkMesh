@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi.testclient import TestClient
 
 from personal_ai_control_plane import loops
@@ -80,6 +82,7 @@ def test_context_brief_includes_active_loops(monkeypatch, tmp_path):
     loops_in_brief = result["active_loops"]
     assert isinstance(loops_in_brief, list) and len(loops_in_brief) == 1
     assert loops_in_brief[0]["run_id"] == run_id
+    assert re.fullmatch(r"exec-\d{8}-[0-9a-f]{6}", loops_in_brief[0]["execution_id"])
     assert loops_in_brief[0]["issue_ref"] == "MUL-7"
 
 
