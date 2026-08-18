@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 from .admin import admin_page
 from .agent_routes import router as agent_router
+from .discovery_routes import router as discovery_router
 from .http_errors import CONTROL_ERRORS, raise_http
 from .loop_routes import router as loop_router
 from .models import (
@@ -56,6 +57,7 @@ app.add_middleware(
 )
 app.include_router(agent_router)
 app.include_router(loop_router)
+app.include_router(discovery_router)
 
 
 async def _validation_error_handler(request, exc: RequestValidationError):
