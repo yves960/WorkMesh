@@ -1,4 +1,8 @@
-"""Integration tests for the internal loop endpoints (TestClient)."""
+"""Integration tests for the internal loop endpoints (TestClient).
+
+Task 3: runs start via the mandatory plan -> confirm flow; the old direct
+POST /api/v1/loop/run is 410 Gone.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +13,9 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
-from personal_ai_control_plane import loops
+from personal_ai_control_plane import execution_routes, loops
 from personal_ai_control_plane.api import app
+from personal_ai_control_plane.models import LoopRunRequest
 
 
 class FakePopen:
@@ -34,6 +39,7 @@ def _client(monkeypatch, tmp_path, executable="loop", *, fake_which=True) -> Tes
         monkeypatch.setattr(loops.shutil, "which", lambda _name: "/usr/local/bin/loop")
     monkeypatch.setenv("AICP_LOOP_EXECUTABLE", executable)
     loops.reset_loops_for_tests()
+    execution_routes.reset_plans_for_tests()
     return TestClient(app)
 
 
@@ -50,13 +56,35 @@ def _run_payload(**overrides) -> dict[str, Any]:
     return payload
 
 
-def test_loop_run_returns_run_id_without_blocking(monkeypatch, tmp_path):
+def _start(c: TestClient, payload: dict[str, Any]) -> dict[str, Any]:
+    """Start a loop the ONLY legal way: plan -> confirm. Returns run JSON."""
+    discovery = {
+        "project_path": payload["project_path"],
+        "project_name": "demo-java-ut",
+        "repo_url": None,
+        "recommended_target": payload["target"],
+        "recommended_profile": payload.get("profile_name") or "java-ut-fixer",
+    }
+    overrides: dict[str, Any] = {}
+    if payload.get("issue_ref") is not None:
+        overrides["issue_ref"] = payload["issue_ref"]
+    plan = c.post(
+        "/api/v1/execution/plan",
+        json={"discovery": discovery, "user_overrides": overrides or None},
+    )
+    assert plan.status_code == 200, plan.text
+    confirmed = c.post(
+        "/api/v1/execution/confirm", json={"plan_id": plan.json()["plan_id"]}
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    return confirmed.json()
+
+
+def test_confirm_returns_run_id_without_blocking(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
 
-    r = c.post("/api/v1/loop/run", json=_run_payload())
+    body = _start(c, _run_payload())
 
-    assert r.status_code == 200
-    body = r.json()
     assert body["status"] == "running"
     assert body["run_id"]
     assert re.fullmatch(r"exec-\d{8}-[0-9a-f]{6}", body["execution_id"])
@@ -76,20 +104,19 @@ def test_loop_run_returns_run_id_without_blocking(monkeypatch, tmp_path):
     )
 
 
-def test_loop_run_without_dry_run_uses_capped_iterations(monkeypatch, tmp_path):
-    c = _client(monkeypatch, tmp_path)
-
-    r = c.post("/api/v1/loop/run", json=_run_payload(dry_run=False))
-
-    assert r.status_code == 200
-    cmd = FakePopen.last_cmd or []
+def test_non_dry_run_argv_caps_iterations_at_safety_limit():
+    # The plan flow always launches dry_run=True (one bounded pass); the
+    # capped-iterations argv contract is still enforced by _loop_command.
+    cmd = loops._loop_command(
+        LoopRunRequest(**_run_payload(dry_run=False)), "loop", "exec-20260818-cafe03"
+    )
     assert "--dry-run" not in cmd  # ForgeLoop CLI has no --dry-run flag
     assert cmd[cmd.index("--max-iterations") + 1] == "5"  # FORGELOOP_MAX_ITERATIONS
 
 
 def test_loop_status_lists_active_run(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
-    run = c.post("/api/v1/loop/run", json=_run_payload()).json()
+    run = _start(c, _run_payload())
 
     r = c.get("/loop/status")
 
@@ -103,7 +130,7 @@ def test_loop_status_lists_active_run(monkeypatch, tmp_path):
 
 def test_loop_callback_updates_memory_and_sqlite(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
-    run = c.post("/api/v1/loop/run", json=_run_payload()).json()
+    run = _start(c, _run_payload())
 
     r = c.post(
         "/api/v1/loop/callback",
@@ -139,7 +166,7 @@ def test_loop_callback_updates_memory_and_sqlite(monkeypatch, tmp_path):
 
 def test_loop_callback_revives_run_from_sqlite_after_restart(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
-    run = c.post("/api/v1/loop/run", json=_run_payload()).json()
+    run = _start(c, _run_payload())
     loops.reset_loops_for_tests()  # simulate process restart wiping memory
 
     r = c.post(
@@ -154,40 +181,45 @@ def test_loop_callback_revives_run_from_sqlite_after_restart(monkeypatch, tmp_pa
 def test_loop_callback_unknown_run_id_returns_404(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
 
-    r = c.post(
-        "/api/v1/loop/callback", json={"run_id": "nope", "status": "pass"}
-    )
+    r = c.post("/api/v1/loop/callback", json={"run_id": "nope", "status": "pass"})
 
     assert r.status_code == 404
 
 
-def test_loop_run_without_target_returns_400(monkeypatch, tmp_path):
-    # target is the required ForgeLoop execution input; a body without it is
-    # rejected with a clear 400 instead of a doomed spawn.
+def test_old_loop_run_route_returns_410(monkeypatch, tmp_path):
+    # Task 3: direct, unconfirmed runs are forbidden — the route is gone.
     c = _client(monkeypatch, tmp_path)
 
-    payload = _run_payload()
-    del payload["target"]
+    r = c.post("/api/v1/loop/run", json=_run_payload())
 
-    r = c.post("/api/v1/loop/run", json=payload)
-
-    assert r.status_code == 400
-    assert r.json()["detail"] == "target is required"
+    assert r.status_code == 410
+    assert "/api/v1/execution/confirm" in r.json()["detail"]
 
 
-def test_loop_run_target_none_returns_400(monkeypatch, tmp_path):
+def test_old_loop_run_route_target_none_rejected(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
 
     r = c.post("/api/v1/loop/run", json=_run_payload(target=None))
 
-    assert r.status_code == 400
-    assert r.json()["detail"] == "target is required"
+    assert r.status_code == 422  # schema validation; the route is dead anyway
 
 
-def test_loop_run_missing_executable_returns_400(monkeypatch, tmp_path):
-    c = _client(monkeypatch, tmp_path, executable="no-such-loop-bin-xyz", fake_which=False)
+def test_confirm_missing_executable_returns_400(monkeypatch, tmp_path):
+    c = _client(
+        monkeypatch, tmp_path, executable="no-such-loop-bin-xyz", fake_which=False
+    )
+    plan = c.post(
+        "/api/v1/execution/plan",
+        json={
+            "discovery": {
+                "project_path": "/tmp/demo",
+                "recommended_target": "com.demo.A",
+                "recommended_profile": "forger",
+            }
+        },
+    )
 
-    r = c.post("/api/v1/loop/run", json=_run_payload())
+    r = c.post("/api/v1/execution/confirm", json={"plan_id": plan.json()["plan_id"]})
 
     assert r.status_code == 400
     assert "no-such-loop-bin-xyz" in r.json()["detail"]
@@ -196,9 +228,7 @@ def test_loop_run_missing_executable_returns_400(monkeypatch, tmp_path):
 def test_loop_callback_invalid_status_returns_422(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
 
-    r = c.post(
-        "/api/v1/loop/callback", json={"run_id": "x", "status": "exploded"}
-    )
+    r = c.post("/api/v1/loop/callback", json={"run_id": "x", "status": "exploded"})
 
     assert r.status_code == 422
 
@@ -213,9 +243,7 @@ def test_loop_endpoints_are_not_exposed_in_openwebui_spec(monkeypatch, tmp_path)
     assert "/api/v1/loop/callback" not in paths
     assert "/loop/status" not in paths
     operations = {
-        op[method].get("operationId")
-        for op in paths.values()
-        for method in op
+        op[method].get("operationId") for op in paths.values() for method in op
     }
     assert "internal_loop_run" not in operations
     assert "internal_loop_callback" not in operations

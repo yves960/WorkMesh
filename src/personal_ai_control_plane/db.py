@@ -88,6 +88,57 @@ def _migrate_legacy(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_loop_runs_execution_id ON loop_runs(execution_id)"
     )
+    _relax_issue_ref_not_null(conn)
+
+
+def _relax_issue_ref_not_null(conn: sqlite3.Connection) -> None:
+    """issue_ref is optional since the target/issue_ref decoupling.
+
+    Databases created before that carry `issue_ref TEXT NOT NULL`, which now
+    breaks persisting runs without an issue (found in the Task 3 E2E).
+    SQLite cannot DROP a NOT NULL constraint, so rebuild the table once.
+    """
+    info = list(conn.execute("PRAGMA table_info(loop_runs)"))
+    issue_ref = next((row for row in info if row["name"] == "issue_ref"), None)
+    if issue_ref is None or not issue_ref["notnull"]:
+        return
+    conn.executescript(
+        """
+        DROP INDEX IF EXISTS idx_loop_runs_execution_id;
+        CREATE TABLE loop_runs_new (
+            run_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            project_path TEXT NOT NULL,
+            profile_name TEXT,
+            issue_ref TEXT,
+            dry_run INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'running',
+            evidence_uri TEXT,
+            diff_summary TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            completed_at TEXT,
+            execution_id TEXT
+        );
+        INSERT INTO loop_runs_new (run_id, workspace_id, project_path,
+            profile_name, issue_ref, dry_run, status, evidence_uri,
+            diff_summary, created_at, updated_at, completed_at, execution_id)
+            SELECT run_id, workspace_id, project_path, profile_name,
+                   NULLIF(issue_ref, ''), dry_run, status, evidence_uri,
+                   diff_summary, created_at, updated_at, completed_at,
+                   execution_id
+            FROM loop_runs;
+        DROP TABLE loop_runs;
+        ALTER TABLE loop_runs_new RENAME TO loop_runs;
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_loop_runs_created ON loop_runs(created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_loop_runs_execution_id"
+        " ON loop_runs(execution_id)"
+    )
 
 
 def utcnow() -> str:

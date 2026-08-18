@@ -23,3 +23,12 @@ class ContextNotFound(ControlPlaneError):
 
 class MissingTargetError(ControlPlaneError):
     """Raised when a loop run request carries no usable ForgeLoop target."""
+
+
+class GuardViolation(ControlPlaneError):
+    """start_loop() was invoked outside the confirmation guard.
+
+    Task 3 hard rule: a loop run may only start after the user explicitly
+    confirms a plan (/api/v1/execution/confirm). start_loop() enforces this
+    itself so no future caller can silently bypass the confirm flow.
+    """

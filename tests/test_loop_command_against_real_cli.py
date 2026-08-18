@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from personal_ai_control_plane import loops
-from personal_ai_control_plane.errors import ControlPlaneError
+from personal_ai_control_plane.errors import ControlPlaneError, GuardViolation
 from personal_ai_control_plane.models import LoopRunRequest
 
 LOOP_BIN = shutil.which("loop") or str(
@@ -77,7 +77,14 @@ def test_dry_run_argv_matches_real_cli_shape():
 
 def test_no_phantom_flags_from_old_contract():
     cmd = loops._loop_command(_req(), "loop", EXEC_ID)
-    for phantom in ("--workspace", "--project", "--issue", "--profile", "--dry-run", "--test"):
+    for phantom in (
+        "--workspace",
+        "--project",
+        "--issue",
+        "--profile",
+        "--dry-run",
+        "--test",
+    ):
         assert phantom not in cmd
     assert cmd[-1] == "sast-fixer"  # profile is the trailing positional
     assert cmd[cmd.index("--max-iterations") + 1] == "1"
@@ -114,7 +121,8 @@ def test_start_loop_launches_with_project_cwd(monkeypatch, tmp_path):
     monkeypatch.setenv("AICP_LOOP_EXECUTABLE", "loop")
     loops.reset_loops_for_tests()
 
-    snap = loops.start_loop(_req(project_path=str(tmp_path / "proj")))
+    with loops._GUARD():
+        snap = loops.start_loop(_req(project_path=str(tmp_path / "proj")))
 
     assert snap["status"] == "running"
     assert re.fullmatch(r"exec-\d{8}-[0-9a-f]{6}", snap["execution_id"])
@@ -134,7 +142,8 @@ def test_start_loop_expands_tilde_in_cwd(monkeypatch):
     monkeypatch.setenv("AICP_LOOP_EXECUTABLE", "loop")
     loops.reset_loops_for_tests()
 
-    loops.start_loop(_req())
+    with loops._GUARD():
+        loops.start_loop(_req())
 
     assert RecordingPopen.last_kwargs is not None
     assert RecordingPopen.last_kwargs["cwd"] == os.path.expanduser("~/projects/demo")
@@ -142,9 +151,26 @@ def test_start_loop_expands_tilde_in_cwd(monkeypatch):
     loops.reset_loops_for_tests()
 
 
+def test_start_loop_outside_guard_never_spawns(monkeypatch):
+    # Defense in depth (Task 3): unconfirmed direct calls are refused.
+    monkeypatch.setattr(loops.subprocess, "Popen", RecordingPopen)
+    monkeypatch.setattr(loops.shutil, "which", lambda _n: "/usr/local/bin/loop")
+    monkeypatch.setenv("AICP_LOOP_EXECUTABLE", "loop")
+    loops.reset_loops_for_tests()
+    RecordingPopen.last_cmd = None
+
+    with pytest.raises(GuardViolation):
+        loops.start_loop(_req())
+
+    assert RecordingPopen.last_cmd is None  # never spawned
+    loops.reset_loops_for_tests()
+
+
 @pytest.mark.skipif(not cli_available, reason="ForgeLoop CLI not installed")
 def test_real_cli_exists_via_help_only():
-    proc = subprocess.Popen([LOOP_BIN, "--help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(
+        [LOOP_BIN, "--help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
     out, _err = proc.communicate(timeout=60)
     assert proc.returncode == 0
     for sub in ("run", "status", "submit", "cleanup", "config"):

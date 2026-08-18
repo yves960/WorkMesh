@@ -6,7 +6,7 @@ import re
 
 from fastapi.testclient import TestClient
 
-from personal_ai_control_plane import loops
+from personal_ai_control_plane import execution_routes, loops
 from personal_ai_control_plane.api import app
 from personal_ai_control_plane.integrations.multica import MulticaClient
 from personal_ai_control_plane.models import ContextCreate, MulticaBindingInput
@@ -51,17 +51,27 @@ def _seed_loop(monkeypatch, tmp_path) -> str:
     monkeypatch.setattr(loops.shutil, "which", lambda _name: "/usr/local/bin/loop")
     monkeypatch.setenv("AICP_LOOP_EXECUTABLE", "loop")
     loops.reset_loops_for_tests()
+    execution_routes.reset_plans_for_tests()
     client = TestClient(app)
-    return client.post(
-        "/api/v1/loop/run",
+    plan = client.post(
+        "/api/v1/execution/plan",
         json={
-            "workspace_id": "ws-1",
-            "project_path": "~/projects/self/WorkMesh",
-            "profile_name": "sast-fixer",  # required positional in ForgeLoop CLI
-            "target": "com.demo.SastServiceTest",  # required ForgeLoop target
-            "issue_ref": "MUL-7",
+            "discovery": {
+                "project_path": "~/projects/self/WorkMesh",
+                "project_name": "demo-java-ut",
+                "repo_url": None,
+                "recommended_target": "com.demo.SastServiceTest",
+                "recommended_profile": "sast-fixer",
+            },
+            "user_overrides": {"issue_ref": "MUL-7"},
         },
-    ).json()["run_id"]
+    )
+    assert plan.status_code == 200, plan.text
+    run = client.post(
+        "/api/v1/execution/confirm", json={"plan_id": plan.json()["plan_id"]}
+    )
+    assert run.status_code == 200, run.text
+    return run.json()["run_id"]
 
 
 def test_context_brief_includes_active_loops(monkeypatch, tmp_path):

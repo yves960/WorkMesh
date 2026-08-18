@@ -24,11 +24,13 @@ import shutil
 import subprocess
 import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
 from .db import connect, init_db, utcnow
-from .errors import ControlPlaneError, MissingTargetError
+from .errors import ControlPlaneError, GuardViolation, MissingTargetError
 from .models import ExecutionRecord, LoopCallbackRequest, LoopRunRequest
 
 # run_id -> run record. Keys with a leading "_" are process bookkeeping and are
@@ -41,6 +43,34 @@ FORGELOOP_MAX_ITERATIONS = 5
 
 class UnknownLoopRun(ControlPlaneError):
     """Raised when a callback references a run that was never started here."""
+
+
+#: Depth counter for the confirmation guard (defense in depth).
+_guard_depth = 0
+
+
+@contextmanager
+def _GUARD() -> Iterator[None]:
+    """The ONLY scope in which start_loop() may run.
+
+    Entered by the confirm endpoint after a plan lookup succeeds. Tests of
+    the underlying launcher wrap their direct start_loop() calls in it too.
+    """
+    global _guard_depth
+    _guard_depth += 1
+    try:
+        yield
+    finally:
+        _guard_depth -= 1
+
+
+def _require_guard() -> None:
+    if _guard_depth <= 0:
+        raise GuardViolation(
+            "start_loop() refused: loop runs require an explicit user"
+            " confirmation (POST /api/v1/execution/plan then"
+            " POST /api/v1/execution/confirm) and must run inside _GUARD"
+        )
 
 
 def _validate_request(req: LoopRunRequest) -> None:
@@ -188,7 +218,12 @@ def _persist_start(
 
 
 def start_loop(req: LoopRunRequest) -> dict[str, Any]:
-    """Launch `loop run` as a detached subprocess and return immediately."""
+    """Launch `loop run` as a detached subprocess and return immediately.
+
+    May only be called inside the `_GUARD()` confirmation context (see
+    GuardViolation): direct, unconfirmed runs are forbidden.
+    """
+    _require_guard()
     _validate_request(req)
     executable = loop_executable()
     if shutil.which(executable) is None:
