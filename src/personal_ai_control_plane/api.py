@@ -41,6 +41,7 @@ from .services.multica_work import (
 from .services.resources import context_resources, effective_context
 from .services.router import route_intent
 from .services.today import build_today
+from .workflow_routes import router as workflow_router
 
 app = FastAPI(
     title="Personal AI Control Plane",
@@ -58,6 +59,7 @@ app.include_router(agent_router)
 app.include_router(loop_router)
 app.include_router(discovery_router)
 app.include_router(execution_router)
+app.include_router(workflow_router)
 
 
 @app.get("/", include_in_schema=False)
