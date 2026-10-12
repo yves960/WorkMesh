@@ -118,3 +118,14 @@ When `workspace_context_brief` returns:
 ```
 
 Open WebUI itself should call its built-in `query_knowledge_files` tool. The Control Plane does not implement RAG and does not copy Knowledge content.
+
+## Workflow Runner（Phase 1 MVP）
+
+YAML 声明式工作流（设计规格见 d86b69c）：`workflows/*.yaml` 定义 steps，控制平面按状态机执行、落库、幂等去重。
+
+- 启动：`POST /api/v1/workflow/start`（body 含 `workflow_name` + `trigger_context`；同 trigger 重复 start 返回同一 `execution_id` 并标记 `idempotent_reuse`）
+- 实例/状态：`GET /api/v1/workflow/{execution_id}`；审批/取消：`POST /api/v1/workflow/{execution_id}/approve` 与 `/cancel`
+- 定义：`GET /api/v1/workflows`、`GET /api/v1/workflows/{name}`
+- 示例：`workflows/java-ut-repair.yaml`
+
+实现说明：workflow 回调控制面的 httpx client 显式 `trust_env=False`，走系统代理（HTTP_PROXY/HTTPS_PROXY）的开发机不会因此 502。
