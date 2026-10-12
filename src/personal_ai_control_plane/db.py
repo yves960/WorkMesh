@@ -77,6 +77,46 @@ CREATE TABLE IF NOT EXISTS execution_records (
 );
 
 CREATE INDEX IF NOT EXISTS idx_execution_records_status ON execution_records(status);
+
+-- Workflow Runner (Phase 1): instances, per-step results, idempotency keys.
+-- Timestamps are ISO-8601 UTC strings (same convention as loop_runs).
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    execution_id TEXT PRIMARY KEY,
+    workflow_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    trigger_source TEXT NOT NULL DEFAULT '',
+    trigger_context TEXT NOT NULL,
+    context TEXT,
+    started_at TEXT,
+    updated_at TEXT,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+
+CREATE TABLE IF NOT EXISTS workflow_step_results (
+    execution_id TEXT NOT NULL
+        REFERENCES workflow_runs(execution_id) ON DELETE CASCADE,
+    step_id TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    inputs TEXT,
+    outputs TEXT,
+    error TEXT,
+    started_at TEXT,
+    updated_at TEXT,
+    duration_ms INTEGER,
+    PRIMARY KEY (execution_id, step_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_step_results_execution
+    ON workflow_step_results(execution_id);
+
+CREATE TABLE IF NOT EXISTS workflow_idempotency (
+    idempotency_key TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
