@@ -1,5 +1,5 @@
 name: java-ut-repair
-version: 1
+version: 2
 description: 修复 Java 单元测试失败
 
 triggers:
@@ -10,19 +10,22 @@ triggers:
       to: ["READY_FOR_AI"]
       issue_type: ["test_failure"]
 
+# v2 数据流修正（loader 前向引用检查驱动）：
+# discovery 打头产出 failure_summary / failing_tests / recommended_*，
+# knowledge 与 context 只做后向引用；v1 的 knowledge→context→discovery 乱序已废。
 steps:
+  - id: discovery
+    type: discovery
+    inputs: {workspace_root: "{{trigger.project_path}}", user_message: "UT 挂了，帮我修"}
+    timeout_seconds: 60
   - id: knowledge
     type: knowledge
-    inputs: {query: "{{context.failure_summary}}", max_results: 5}
+    inputs: {query: "{{discovery.failure_summary}}", max_results: 5}
     timeout_seconds: 30
   - id: context
     type: context
     inputs: {include: ["trigger.user_message", "discovery.failure_summary"]}
     timeout_seconds: 5
-  - id: discovery
-    type: discovery
-    inputs: {workspace_root: "{{trigger.project_path}}", user_message: "UT 挂了，帮我修"}
-    timeout_seconds: 60
   - id: issue
     type: issue
     inputs: {title_template: "修复 {{discovery.failing_tests[0]}}", create_if_missing: true}

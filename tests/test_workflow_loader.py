@@ -80,7 +80,7 @@ def test_java_ut_repair_loads(wf_env):  # noqa: F811
     defn = load_workflow("java-ut-repair")
     assert defn.name == "java-ut-repair"
     assert [s.id for s in defn.steps] == [
-        "knowledge", "context", "discovery", "issue",
+        "discovery", "knowledge", "context", "issue",
         "approval", "forgeloop", "sync_multica", "notify",
     ]
     assert defn.steps[5].requires_approval is True

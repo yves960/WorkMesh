@@ -72,8 +72,8 @@ def test_step_failure_fails_instance_and_skips_rest(wf_env):  # noqa: F811
 
     assert instance.status is WorkflowStatus.FAILED
     statuses = [sr.status for sr in instance.step_results]
-    assert statuses == [StepStatus.FAILED] + [StepStatus.SKIPPED] * 7
-    assert instance.step_results[0].error and "KB is down" in instance.step_results[0].error
+    assert statuses == [StepStatus.DONE, StepStatus.FAILED] + [StepStatus.SKIPPED] * 6
+    assert instance.step_results[1].error and "KB is down" in instance.step_results[1].error
 
 
 def test_step_timeout_fails_instance(wf_env):  # noqa: F811

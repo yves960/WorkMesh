@@ -99,6 +99,32 @@ def _fmt_loc(loc: tuple[Any, ...]) -> str:
     return ".".join(parts)
 
 
+_TEMPLATE_REF_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_.\[\]-]+?)\s*\}\}")
+
+
+def check_step_references(defn: WorkflowDef) -> None:
+    """静态依赖检查：{{step_id.*}} 不得前向引用后执行步骤的输出。
+
+    线性执行模型下前向引用渲染时静默退化为 None/空串（render_value），
+    属于数据流 bug（曾见于 java-ut-repair v1 的 knowledge→context 乱序）；
+    trigger / workflow 为保留域，不受顺序限制。
+    """
+    order = {step.id: index for index, step in enumerate(defn.steps)}
+    reserved = {"trigger", "workflow"}
+    for index, step in enumerate(defn.steps):
+        for match in _TEMPLATE_REF_RE.finditer(str(step.inputs or {})):
+            ref = match.group(1)
+            root = ref.split(".")[0].split("[")[0]
+            if root in reserved or root not in order:
+                continue
+            if order[root] > index:
+                raise WorkflowLoadError(
+                    f"step {step.id!r} 前向引用了后执行步骤 {root!r} 的输出"
+                    f"（{{{{{ref}}}}}）：线性执行下将解析为空，请调整步骤顺序或引用来源",
+                    path=f"steps[{index}].inputs",
+                )
+
+
 def parse_workflow(raw: dict[str, Any]) -> WorkflowDef:
     """Validate one decoded YAML document into a WorkflowDef."""
     if not isinstance(raw, dict):
@@ -143,6 +169,7 @@ def parse_workflow(raw: dict[str, Any]) -> WorkflowDef:
                     f"unknown step type {step.type!r}; known: {sorted(known)}",
                     path=f"steps[{i}].type",
                 )
+    check_step_references(defn)
     return defn
 
 
