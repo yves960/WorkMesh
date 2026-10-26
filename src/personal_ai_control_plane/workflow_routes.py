@@ -12,10 +12,11 @@ Endpoints:
     GET  /api/v1/workflows                   list workflow definitions
     GET  /api/v1/workflows/{name}            one full definition + raw YAML
 
-Phase 1 note: the approval step is a stub that auto-approves, so no instance
-sits in WAITING_FOR_APPROVAL. /approve still records the user decision into
-the instance context (Phase 2 approval waits on it) and reject transitions
-the instance to REJECTED, halting the runner at the next step boundary.
+Approval gate (2026-10-26 P0): the runner pauses at approval /
+requires_approval steps and flips the instance to WAITING_FOR_APPROVAL
+(a real enum member since this fix — previously a ghost string).
+/approve records the human decision, marks the approval step DONE and
+resumes execution; reject transitions to REJECTED and skips the rest.
 """
 
 from __future__ import annotations
@@ -42,7 +43,9 @@ from .workflow.runner import (
     load_instance,
     new_execution_id,
     persist_instance,
+    record_approval,
     run_workflow,
+    skip_pending_steps,
 )
 from .workflow.state import WorkflowInstance, WorkflowStatus, transition
 
@@ -97,8 +100,9 @@ def _spawn(instance: WorkflowInstance) -> None:
     _TASKS[instance.execution_id] = task
 
 
-_LIVE_FOR_APPROVE = ("RUNNING", "PENDING", "WAITING_FOR_APPROVAL")
-_LIVE_FOR_CANCEL = ("PENDING", "RUNNING", "WAITING_FOR_APPROVAL")
+#: /approve 只对停在审批闸门的实例有意义（2026-10-26 起 WAITING_FOR_APPROVAL 是真实枚举）。
+_LIVE_FOR_APPROVE = (WorkflowStatus.WAITING_FOR_APPROVAL,)
+_LIVE_FOR_CANCEL = (WorkflowStatus.PENDING, WorkflowStatus.RUNNING, WorkflowStatus.WAITING_FOR_APPROVAL)
 
 
 @router.post("/api/v1/workflow/start", operation_id="workflow_start")
@@ -149,44 +153,40 @@ async def workflow_get(execution_id: str) -> dict[str, Any]:
 )
 async def workflow_approve(execution_id: str, payload: WorkflowApproveRequest) -> dict[str, Any]:
     instance = _get_instance(execution_id)
-    if instance.status.value not in _LIVE_FOR_APPROVE:
+    if instance.status is not WorkflowStatus.WAITING_FOR_APPROVAL:
         raise HTTPException(
             status_code=409,
             detail=(
                 f"cannot approve: instance status is {instance.status.value};"
-                " approve only applies to a live instance (RUNNING /"
-                " WAITING_FOR_APPROVAL)"
+                " approve only applies to a WAITING_FOR_APPROVAL instance"
+                " (paused at its approval / requires_approval gate)"
             ),
         )
-    if payload.decision == "reject":
-        if instance.status is WorkflowStatus.PENDING:
-            transition(instance, WorkflowStatus.RUNNING)  # PENDING -> RUNNING -> REJECTED
-        transition(instance, WorkflowStatus.REJECTED)
-        persist_instance(instance)
-    else:
-        # Record the explicit user decision; the Phase-2 approval step waits
-        # on exactly this key. The Phase-1 stub auto-approves and the runner
-        # keeps flowing.
-        approval = dict(instance.context.get("approval") or {})
-        approval.update({"decision": "approve", "reason": payload.reason})
-        instance.context["approval"] = approval
-        persist_instance(instance)
+    resume = record_approval(instance, payload.decision, payload.reason)
+    if resume:
+        _spawn(instance)  # resume：runner 跳过已 DONE 的步，从闸门后继续
     return instance.to_dict()
 
 
 @router.post("/api/v1/workflow/{execution_id}/cancel", operation_id="workflow_cancel")
 async def workflow_cancel(execution_id: str, payload: WorkflowCancelRequest) -> dict[str, Any]:
     instance = _get_instance(execution_id)
-    if instance.status.value not in _LIVE_FOR_CANCEL:
+    if instance.status not in _LIVE_FOR_CANCEL:
         raise HTTPException(
             status_code=409,
-            detail=f"cannot cancel: instance status is {instance.status.value}",
+            detail=(
+                f"cannot cancel: instance status is {instance.status.value};"
+                " cancellable statuses: PENDING / RUNNING / WAITING_FOR_APPROVAL"
+            ),
         )
     instance.context["cancel_reason"] = payload.reason
+    was_waiting = instance.status is WorkflowStatus.WAITING_FOR_APPROVAL
     transition(instance, WorkflowStatus.CANCELLED)
     persist_instance(instance)
-    # The runner notices CANCELLED at the next step boundary and marks the
-    # remaining steps SKIPPED (background task keeps running until then).
+    # RUNNING 态由 runner 在下一个步边界注意到并 SKIPPED 余步；
+    # WAITING 态 runner 任务已停，路由侧直接补刀。
+    if was_waiting:
+        skip_pending_steps(instance)
     return instance.to_dict()
 
 

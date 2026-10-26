@@ -4,14 +4,32 @@ WorkMesh Workflow Runner（Phase 1）HTTP 契约。快捷入口：`python3 scrip
 
 ## 端点总览
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/v1/workflow/start` | 启动工作流（幂等：同 trigger 重放返回原 execution_id） |
-| GET | `/api/v1/workflow/{execution_id}` | 实例/状态查询 |
-| POST | `/api/v1/workflow/{execution_id}/approve` | 审批（approve / reject） |
-| POST | `/api/v1/workflow/{execution_id}/cancel` | 取消（仅 PENDING/RUNNING/WAITING_FOR_APPROVAL） |
-| GET | `/api/v1/workflows` | 工作流定义列表 |
-| GET | `/api/v1/workflows/{name}` | 单个定义 |
+| 方法 | 路径 | 请求体 | 说明 |
+|------|------|--------|------|
+| POST | `/api/v1/workflow/start` | `{workflow_name, trigger_context}` | 启动工作流（幂等：同 trigger 重放返回原 execution_id） |
+| GET | `/api/v1/workflow/{execution_id}` | — | 实例/状态查询 |
+| POST | `/api/v1/workflow/{execution_id}/approve` | `{decision: "approve"\|"reject", reason?}` | 审批（**仅 WAITING_FOR_APPROVAL 态**，否则 409） |
+| POST | `/api/v1/workflow/{execution_id}/cancel` | `{reason}`（必填，缺了 422） | 取消（PENDING / RUNNING / WAITING_FOR_APPROVAL） |
+| GET | `/api/v1/workflows` | — | 工作流定义列表 |
+| GET | `/api/v1/workflows/{name}` | — | 单个定义 |
+
+## 实例状态机（顶层 status，7 个取值）
+
+```
+PENDING ──▶ RUNNING ──▶ COMPLETED
+              │ ▲
+              │ └──（approve 后 resume）
+              ▼
+     WAITING_FOR_APPROVAL ──▶ REJECTED（reject）
+              │
+              ├──▶ RUNNING（approve：闸门后继续）
+              └──▶ CANCELLED
+RUNNING 也直达 FAILED / REJECTED / CANCELLED；四个终态（COMPLETED/FAILED/REJECTED/CANCELLED）不再转移。
+```
+
+注意：`DONE` 是**步级**状态（step_results[].status），不是实例状态——实例终态是上述四个。
+
+审批闸门（2026-10-26）：runner 在 `type: approval` 的步、以及 `requires_approval: true` 的步之前停下并转入 WAITING_FOR_APPROVAL；未审批时危险步绝不进入 RUNNING、不产生副作用（如 run_id）。
 
 ## trigger_context 字段
 
@@ -78,11 +96,11 @@ WorkMesh Workflow Runner（Phase 1）HTTP 契约。快捷入口：`python3 scrip
 { "decision": "approve", "reason": "看过计划，没问题" }
 ```
 
-`decision` 取值 `"approve" | "reject"`；非 live 状态（已终态/未到审批）返回 `409`。
+`decision` 取值 `"approve" | "reject"`；**仅 WAITING_FOR_APPROVAL 态可调用**（实例停在审批/危险步闸门时），其它状态返回 `409` 且文案列出当前态与合法态。approve 后实例回 RUNNING 并从闸门后续跑；reject 转 REJECTED 且余步置 SKIPPED。
 
 ### step_results 字段
 
-`status`: `PENDING | RUNNING | DONE | SKIPPED | FAILED`；每项含 `step_id` / `step_index` / `inputs` / `outputs` / `error` / `started_at` / `updated_at` / `duration_ms`。
+`status`: `PENDING | RUNNING | DONE | SKIPPED | FAILED`；每项含 `step_id` / `step_index` / `inputs` / `outputs` / `error` / `started_at` / `updated_at` / `duration_ms`。审批步被人工批准后 `inputs` 会补渲染留痕（计划可审阅），`outputs` 携带 `{decision, reason, approved_at}`。
 
 ## 静态依赖检查（loader）
 

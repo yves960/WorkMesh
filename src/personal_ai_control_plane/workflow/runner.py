@@ -210,7 +210,15 @@ def _predecessors_ok(instance: WorkflowInstance, defn, index: int) -> bool:
 
 
 async def run_workflow(instance: WorkflowInstance) -> WorkflowInstance:
-    """Execute every step in order. Requires status == RUNNING."""
+    """Execute every step in order. Requires status == RUNNING.
+
+    审批闸门（2026-10-26 P0-1）：
+    - type == "approval" 的步在未获人工批准时把实例转入 WAITING_FOR_APPROVAL 并停住
+      （步本身保持 PENDING，等 POST /approve 记录决策后置 DONE 并重新拉起本函数）；
+    - requires_approval: true 的步执行前强制校验 context["approval"].decision == "approve"
+      （双保险：即使 YAML 里漏了 approval 步，危险动作也不会自动跑）。
+    重入安全：已 DONE/SKIPPED 的步直接跳过（approve 后 resume 复用本循环）。
+    """
     if instance.status != WorkflowStatus.RUNNING:
         raise ValueError(
             f"run_workflow requires RUNNING instance, got {instance.status.value}"
@@ -219,6 +227,10 @@ async def run_workflow(instance: WorkflowInstance) -> WorkflowInstance:
 
     for index, step_def in enumerate(defn.steps):
         result = instance.step_results[index]
+
+        # resume 跳过：已完结的步不重跑（approve 后二次拉起时走到这里）
+        if result.status in (StepStatus.DONE, StepStatus.SKIPPED):
+            continue
 
         # External approve/cancel moved us out of RUNNING: stop, skip the rest.
         if instance.status in _HALTED_STATUSES:
@@ -231,6 +243,19 @@ async def run_workflow(instance: WorkflowInstance) -> WorkflowInstance:
             if result.status == StepStatus.PENDING:
                 _mark(instance, result, StepStatus.SKIPPED)
             continue
+
+        # 审批闸门 1：approval 步未获人工批准 → 停在等待态（不执行 stub）
+        approved = (instance.context.get("approval") or {}).get("decision") == "approve"
+        if step_def.type == "approval" and not approved:
+            transition(instance, WorkflowStatus.WAITING_FOR_APPROVAL)
+            persist_instance(instance)
+            return instance
+
+        # 审批闸门 2（双保险，WORKFLOW_DESIGN.md:88）：危险动作步前必须有人批过
+        if step_def.requires_approval and not approved:
+            transition(instance, WorkflowStatus.WAITING_FOR_APPROVAL)
+            persist_instance(instance)
+            return instance
 
         _mark(instance, result, StepStatus.RUNNING)
         result.started_at = time.time()
@@ -284,3 +309,50 @@ async def run_workflow(instance: WorkflowInstance) -> WorkflowInstance:
         transition(instance, WorkflowStatus.COMPLETED)
         persist_instance(instance)
     return instance
+
+
+# ---------------------------------------------------------------------------
+# 审批闸门 API（routes 与 tests 共用，单一来源）
+# ---------------------------------------------------------------------------
+
+def skip_pending_steps(instance: WorkflowInstance) -> None:
+    """剩余 PENDING 步置 SKIPPED（WAITING 被 reject/cancel 时 runner 任务已停，调用方补刀）。"""
+    for sr in instance.step_results:
+        if sr.status is StepStatus.PENDING:
+            sr.status = StepStatus.SKIPPED
+            sr.updated_at = time.time()
+            persist_step_result(instance.execution_id, sr)
+    instance.updated_at = time.time()
+    persist_instance(instance)
+
+
+def record_approval(instance: WorkflowInstance, decision: str, reason: str | None) -> bool:
+    """记录人工审批决策（调用方保证实例处于 WAITING_FOR_APPROVAL）。
+
+    approve：写 context + 渲染并记录 approval 步的 inputs（计划留痕供审阅）+ 置 DONE，
+             WAITING_FOR_APPROVAL → RUNNING，返回 True（调用方应重新拉起 run_workflow 续跑）；
+    reject： 写 context → REJECTED + 余步置 SKIPPED，返回 False。
+    """
+    now_iso = datetime.now(UTC).isoformat()
+    instance.context["approval"] = {
+        "decision": decision,
+        "reason": reason,
+        "decided_at": now_iso,
+    }
+    if decision == "reject":
+        transition(instance, WorkflowStatus.REJECTED)
+        skip_pending_steps(instance)
+        return False
+
+    defn = load_workflow(instance.workflow_name)
+    for sr in instance.step_results:
+        if sr.status is StepStatus.PENDING and defn.steps[sr.step_index].type == "approval":
+            sr.inputs = render_inputs(defn.steps[sr.step_index].inputs, instance.context)
+            sr.status = StepStatus.DONE
+            sr.outputs = {"decision": "approve", "reason": reason, "approved_at": now_iso}
+            sr.updated_at = time.time()
+            persist_step_result(instance.execution_id, sr)
+            break
+    transition(instance, WorkflowStatus.RUNNING)
+    persist_instance(instance)
+    return True

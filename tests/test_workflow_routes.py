@@ -31,6 +31,9 @@ steps:
     type: slow_sleep
     inputs: {seconds: 2}
     timeout_seconds: 30
+  - id: gate
+    type: approval
+    timeout_seconds: 300
   - id: notify
     type: notify
     timeout_seconds: 5
@@ -94,10 +97,32 @@ def test_start_runs_workflow_to_completion_in_background(wf_env):  # noqa: F811
         assert WF_EXEC_ID_RE.match(body["execution_id"])
         assert body["status"] in ("PENDING", "RUNNING")
 
+        waiting = _poll(client, body["execution_id"],
+                        lambda b: b["status"] == "WAITING_FOR_APPROVAL")
+        assert waiting["status"] == "WAITING_FOR_APPROVAL"
+        approved = client.post(f"/api/v1/workflow/{body['execution_id']}/approve",
+                               json={"decision": "approve", "reason": "test"})
+        assert approved.status_code == 200, approved.text
         final = _poll(client, body["execution_id"],
                       lambda b: b["status"] == "COMPLETED")
     assert all(sr["status"] == "DONE" for sr in final["step_results"])
     assert final["context"]["forgeloop"]["execution_id"]
+
+
+def test_approval_gate_blocks_forgeloop_until_approved(wf_env):  # noqa: F811
+    """蔚 2026-10-26 验收口径：未审批 → forgeloop 绝不进入 RUNNING 且不产生 run_id。"""
+    with TestClient(app) as client:
+        exec_id = client.post("/api/v1/workflow/start", json={
+            "workflow_name": "java-ut-repair",
+            "trigger_context": trigger_for(wf_env["project"]),
+        }).json()["execution_id"]
+        waiting = _poll(client, exec_id, lambda b: b["status"] == "WAITING_FOR_APPROVAL")
+        assert waiting["status"] == "WAITING_FOR_APPROVAL"
+
+        forgeloop = next(sr for sr in waiting["step_results"] if sr["step_id"] == "forgeloop")
+        assert forgeloop["status"] == "PENDING"
+        assert "forgeloop" not in waiting["context"]
+        assert not any((sr.get("outputs") or {}).get("run_id") for sr in waiting["step_results"])
 
 
 def test_start_rejects_non_matching_trigger(wf_env):  # noqa: F811
@@ -131,6 +156,7 @@ def test_approve_records_decision_and_returns_200(wf_env):  # noqa: F811
         exec_id = client.post("/api/v1/workflow/start", json={
             "workflow_name": "slow-demo", "trigger_context": {"user_message": "UT 挂了"},
         }).json()["execution_id"]
+        _poll(client, exec_id, lambda b: b["status"] == "WAITING_FOR_APPROVAL")
 
         resp = client.post(f"/api/v1/workflow/{exec_id}/approve",
                            json={"decision": "approve", "reason": "plan 看起来没问题"})
@@ -148,6 +174,7 @@ def test_reject_halts_workflow(wf_env):  # noqa: F811
         exec_id = client.post("/api/v1/workflow/start", json={
             "workflow_name": "slow-demo", "trigger_context": {"user_message": "UT 挂了"},
         }).json()["execution_id"]
+        _poll(client, exec_id, lambda b: b["status"] == "WAITING_FOR_APPROVAL")
 
         resp = client.post(f"/api/v1/workflow/{exec_id}/approve",
                            json={"decision": "reject", "reason": "target 不对"})

@@ -16,7 +16,7 @@ from workflow_testkit import (  # noqa: F401
 
 from personal_ai_control_plane.api import app
 from personal_ai_control_plane.workflow import steps
-from personal_ai_control_plane.workflow.runner import create_instance, run_workflow
+from personal_ai_control_plane.workflow.runner import create_instance, record_approval, run_workflow
 from personal_ai_control_plane.workflow.state import (
     StepStatus,
     WorkflowStatus,
@@ -32,8 +32,22 @@ def _run(workflow_name: str, trigger: dict):
     return asyncio.run(run_workflow(instance))
 
 
+def _approve_and_resume(instance):
+    """人工批准 + 续跑（与路由同源：runner.record_approval）。"""
+    assert record_approval(instance, "approve", "test")
+    return asyncio.run(run_workflow(instance))
+
+
 def test_full_java_ut_repair_completes(wf_env):  # noqa: F811
     instance = _run("java-ut-repair", trigger_for(wf_env["project"]))
+
+    # 审批闸门回归（蔚 2026-10-26 验收口径）：未审批 → forgeloop 绝不 RUNNING、不产生 run_id
+    assert instance.status is WorkflowStatus.WAITING_FOR_APPROVAL
+    gate = next(sr for sr in instance.step_results if sr.step_id == "forgeloop")
+    assert gate.status is StepStatus.PENDING
+    assert "forgeloop" not in instance.context
+
+    instance = _approve_and_resume(instance)
 
     assert instance.status is WorkflowStatus.COMPLETED
     assert [sr.status for sr in instance.step_results] == [StepStatus.DONE] * 8
@@ -55,6 +69,7 @@ def test_full_java_ut_repair_completes(wf_env):  # noqa: F811
 
 def test_step_outputs_reach_following_steps(wf_env):  # noqa: F811
     instance = _run("java-ut-repair", trigger_for(wf_env["project"]))
+    instance = _approve_and_resume(instance)
     approval = next(sr for sr in instance.step_results if sr.step_id == "approval")
     assert "java-ut-fixer" in approval.inputs["plan_template"]
     assert FAILING_TEST in approval.inputs["plan_template"]

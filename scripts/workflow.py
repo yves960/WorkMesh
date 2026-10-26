@@ -84,6 +84,14 @@ def cmd_approve(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_cancel(args: argparse.Namespace) -> int:
+    return _request(
+        "POST",
+        f"/api/v1/workflow/{args.execution_id}/cancel",
+        {"reason": args.reason},
+    )
+
+
 def cmd_lint(args: argparse.Namespace) -> int:
     from personal_ai_control_plane.workflow.loader import (
         WorkflowLoadError,
@@ -122,11 +130,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("execution_id")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("approve", help="审批（approve/reject）")
+    p = sub.add_parser("approve", help="审批（approve/reject，仅 WAITING_FOR_APPROVAL 态）")
     p.add_argument("execution_id")
     p.add_argument("--decision", choices=["approve", "reject"], default="approve")
     p.add_argument("--reason", default=None)
     p.set_defaults(func=cmd_approve)
+
+    p = sub.add_parser("cancel", help="取消 live 实例（PENDING/RUNNING/WAITING_FOR_APPROVAL）")
+    p.add_argument("execution_id")
+    p.add_argument("--reason", default="")
+    p.set_defaults(func=cmd_cancel)
 
     p = sub.add_parser("lint", help="本地校验 YAML（含前向引用静态检查），无需服务")
     p.add_argument("name")

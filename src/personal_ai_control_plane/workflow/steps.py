@@ -161,14 +161,16 @@ async def issue_step(ctx: StepContext) -> dict[str, Any]:
 
 
 async def approval_step(ctx: StepContext) -> dict[str, Any]:
-    # Phase 1: auto-approve. Phase 2 replaces this with a real wait on
-    # POST /workflow/{id}/approve (the endpoint already records decisions).
-    return {
-        "stub": True,
-        "auto_approved": True,
-        "approved": True,
-        "approved_at": datetime.now(UTC).isoformat(),
-    }
+    """占位实现，正常路径永不 invoked：runner 在 approval 步前直接转入
+    WAITING_FOR_APPROVAL（2026-10-26 P0-1 修复），决策由 POST /workflow/{id}/approve
+    写入 context["approval"] 后置 DONE。若本函数被任何路径直呼，说明闸门被绕过——
+    故意炸响而不是静默放行（未验证的自动批准比没有批准更危险）。
+    """
+    raise RuntimeError(
+        "approval step is gated by the runner: approve via POST /api/v1/workflow/"
+        f"{ctx.context.get('workflow', {}).get('name', '<unknown>')}/approve"
+        " — direct execution would bypass the human gate"
+    )
 
 
 async def forgeloop_step(ctx: StepContext) -> dict[str, Any]:

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""脱离 pytest 的 workflow 冒烟：start → WAITING_FOR_APPROVAL → approve → 终态。
+"""脱离 pytest 的 workflow 冒烟：start → 审批闸门 → approve → COMPLETED。
 
-复用 tests/workflow_testkit.py 的隔离与 mock（ASGI 自环 transport + FakePopen），
-不依赖任何外部服务与 pytest，直接 `python3 scripts/smoke_workflow.py` 演示/排障。
-退出码：0 = 全程走通到 DONE；1 = 中途失败或超时。
+2026-10-26 P0/P1-3 重写：审批闸门为真实语义（runner 在 approval /
+requires_approval 步停住，实例转 WAITING_FOR_APPROVAL），本脚本按真实语义断言：
+  1. start 后必然到达 WAITING_FOR_APPROVAL（approval 步暂停，不是自动放行）；
+  2. 等待态下 forgeloop 绝不 RUNNING、context 无 forgeloop 输出（不产生 run_id）；
+  3. approve 后跑到 COMPLETED，forgeloop 输出含 run_id（闸门放行后真执行）。
+退出码：0 = 全程真实走通；1 = 任一断言失败（本脚本是验收凭证，必须自己先能绿）。
 """
 from __future__ import annotations
 
@@ -24,7 +27,8 @@ import workflow_testkit as testkit  # noqa: E402
 from personal_ai_control_plane.api import app  # noqa: E402
 from personal_ai_control_plane.workflow import loader, steps  # noqa: E402
 
-TERMINAL = ("DONE", "FAILED", "CANCELLED")
+#: 实例级终态（蔚 10-26 勘误：DONE 是步级状态，实例级是这四个）
+TERMINAL = ("COMPLETED", "FAILED", "REJECTED", "CANCELLED")
 
 
 def _prepare(tmp: str) -> Path:
@@ -75,18 +79,31 @@ async def main() -> int:
                     json={"workflow_name": "java-ut-repair", "trigger_context": trigger},
                 )
                 print(f"HTTP {resp.status_code}")
-                print(json.dumps(resp.json(), ensure_ascii=False, indent=2))
                 if resp.status_code != 200:
+                    print(json.dumps(resp.json(), ensure_ascii=False, indent=2))
                     return 1
                 execution_id = resp.json()["execution_id"]
 
-                print("== poll → WAITING_FOR_APPROVAL ==")
-                status = await _poll(client, execution_id, "WAITING_FOR_APPROVAL")
-                if status.get("status") != "WAITING_FOR_APPROVAL":
-                    print("[smoke] ERROR: 未到达 WAITING_FOR_APPROVAL")
+                print("== 1) poll → WAITING_FOR_APPROVAL（审批闸门真实存在） ==")
+                waiting = await _poll(client, execution_id, "WAITING_FOR_APPROVAL")
+                if waiting.get("status") != "WAITING_FOR_APPROVAL":
+                    print(f"[smoke] FAIL: 未停在审批闸门，status={waiting.get('status')}")
                     return 1
 
-                print("== POST /api/v1/workflow/{id}/approve ==")
+                # 蔚的验收断言：未审批 → forgeloop 绝不 RUNNING、不产生 run_id
+                gate = next(
+                    (sr for sr in waiting.get("step_results", []) if sr.get("step_id") == "forgeloop"),
+                    {},
+                )
+                if gate.get("status") != "PENDING":
+                    print(f"[smoke] FAIL: 等待态 forgeloop 应为 PENDING，实际 {gate.get('status')}")
+                    return 1
+                if "forgeloop" in (waiting.get("context") or {}):
+                    print("[smoke] FAIL: 等待态 context 已出现 forgeloop 输出（闸门被绕过！）")
+                    return 1
+                print("[smoke] OK: 未审批时 forgeloop 保持 PENDING，未产生 run_id")
+
+                print("== 2) POST /approve {decision: approve} ==")
                 approve = await client.post(
                     f"/api/v1/workflow/{execution_id}/approve",
                     json={"decision": "approve", "reason": "smoke run"},
@@ -96,20 +113,36 @@ async def main() -> int:
                     print(json.dumps(approve.json(), ensure_ascii=False, indent=2))
                     return 1
 
-                print("== poll → 终态 ==")
-                status = await _poll(client, execution_id, "DONE")
-                final = {
-                    key: status.get(key)
-                    for key in ("execution_id", "workflow_name", "status", "current_step")
+                print("== 3) poll → COMPLETED ==")
+                final = await _poll(client, execution_id, "COMPLETED")
+                if final.get("status") != "COMPLETED":
+                    failed_step = next(
+                        (sr for sr in final.get("step_results", []) if sr.get("status") == "FAILED"),
+                        {},
+                    )
+                    print(
+                        f"[smoke] FAIL: 终态={final.get('status')}，失败步："
+                        f"{failed_step.get('step_id')} {failed_step.get('error')}"
+                    )
+                    return 1
+
+                forgeloop_out = (final.get("context") or {}).get("forgeloop") or {}
+                if not forgeloop_out.get("run_id"):
+                    print(f"[smoke] FAIL: 放行后 forgeloop 无 run_id：{forgeloop_out}")
+                    return 1
+
+                summary = {
+                    "execution_id": execution_id,
+                    "status": final["status"],
+                    "run_id": forgeloop_out.get("run_id"),
+                    "steps": [
+                        {"id": sr.get("step_id"), "status": sr.get("status")}
+                        for sr in final.get("step_results", [])
+                    ],
                 }
-                final["steps"] = [
-                    {"id": sr.get("step_id"), "status": sr.get("status")}
-                    for sr in status.get("step_results", [])
-                ]
-                print(json.dumps(final, ensure_ascii=False, indent=2))
-                ok = status.get("status") == "DONE"
-                print(f"[smoke] {'OK: 全程走通' if ok else 'FAIL: 终态=' + str(status.get('status'))}")
-                return 0 if ok else 1
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+                print("[smoke] OK: 闸门前零执行、放行后真跑通（run_id 在场）")
+                return 0
         finally:
             loader.clear_loader_cache()
             testkit.reset_workflow_routes_for_tests()

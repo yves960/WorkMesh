@@ -1,8 +1,13 @@
 """Workflow instance state machine + dataclasses (Phase 1).
 
 Statuses:
-    Workflow: PENDING -> RUNNING -> COMPLETED | FAILED | REJECTED | CANCELLED
+    Workflow: PENDING -> RUNNING -> WAITING_FOR_APPROVAL -> RUNNING -> COMPLETED
+             (WAITING_FOR_APPROVAL 也可 -> REJECTED / CANCELLED)
     Step:     PENDING -> RUNNING -> DONE | FAILED | SKIPPED
+
+WAITING_FOR_APPROVAL（2026-10-26 P0-2 补齐）：runner 在 approval / requires_approval
+步前停下并转入此状态；POST /approve 才回到 RUNNING 继续。此前它只以裸字符串
+存在于路由文案里（幽灵状态），现归位为真枚举。
 
 Timestamps are float epoch seconds internally (cheap duration math) and are
 serialized to ISO-8601 UTC strings in to_dict() for the API surface.
@@ -20,6 +25,7 @@ from typing import Any
 class WorkflowStatus(str, Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
+    WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     REJECTED = "REJECTED"
@@ -45,8 +51,14 @@ _TERMINAL = {
 _VALID_TRANSITIONS: dict[WorkflowStatus, set[WorkflowStatus]] = {
     WorkflowStatus.PENDING: {WorkflowStatus.RUNNING, WorkflowStatus.CANCELLED},
     WorkflowStatus.RUNNING: {
+        WorkflowStatus.WAITING_FOR_APPROVAL,
         WorkflowStatus.COMPLETED,
         WorkflowStatus.FAILED,
+        WorkflowStatus.REJECTED,
+        WorkflowStatus.CANCELLED,
+    },
+    WorkflowStatus.WAITING_FOR_APPROVAL: {
+        WorkflowStatus.RUNNING,
         WorkflowStatus.REJECTED,
         WorkflowStatus.CANCELLED,
     },
