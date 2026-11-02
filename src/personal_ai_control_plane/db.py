@@ -103,6 +103,9 @@ CREATE TABLE IF NOT EXISTS workflow_step_results (
     inputs TEXT,
     outputs TEXT,
     error TEXT,
+    error_code TEXT,
+    http_status INTEGER,
+    error_detail TEXT,
     started_at TEXT,
     updated_at TEXT,
     duration_ms INTEGER,
@@ -199,10 +202,24 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _ensure_step_error_columns(conn: sqlite3.Connection) -> None:
+    """蔚 2026-11-02 P2-5：存量库补结构化错误三列（新建库已在 SCHEMA 里，ALTER 幂等跳过）。"""
+    for stmt in (
+        "ALTER TABLE workflow_step_results ADD COLUMN error_code TEXT",
+        "ALTER TABLE workflow_step_results ADD COLUMN http_status INTEGER",
+        "ALTER TABLE workflow_step_results ADD COLUMN error_detail TEXT",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass  # duplicate column —— 已迁移
+
+
 def init_db() -> Path:
     with connect() as conn:
         conn.executescript(SCHEMA)
         _migrate_legacy(conn)
+        _ensure_step_error_columns(conn)
     return database_path()
 
 

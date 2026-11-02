@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from .db import connect, init_db
 from .workflow import loader, steps  # noqa: F401  (wires loader<->registry)
 from .workflow.idempotency import check_and_register, make_idempotency_key
 from .workflow.loader import (
@@ -105,6 +108,21 @@ _LIVE_FOR_APPROVE = (WorkflowStatus.WAITING_FOR_APPROVAL,)
 _LIVE_FOR_CANCEL = (WorkflowStatus.PENDING, WorkflowStatus.RUNNING, WorkflowStatus.WAITING_FOR_APPROVAL)
 
 
+def _loop_preflight_warning(defn) -> str | None:
+    """蔚 2026-11-02 P3-4：forgeloop 需要的 loop 可执行缺失时提前警告。
+    不阻断启动（闸门已保零副作用），只在响应附 warning——免得烧完 4 个前置步
+    + 浪费一次人工审批才在第 6 步失败，人的审批注意力不该被这么浪费。"""
+    if not any(step.type == "forgeloop" for step in defn.steps):
+        return None
+    executable = os.environ.get("AICP_LOOP_EXECUTABLE", "loop")
+    if shutil.which(executable) is not None:
+        return None
+    return (
+        f"preflight: 工作流含 forgeloop 步，但可执行 '{executable}' 不在 PATH 且 "
+        "AICP_LOOP_EXECUTABLE 未指向有效路径——放行后该步必失败，建议先安装/配置（本警告不阻断）"
+    )
+
+
 @router.post("/api/v1/workflow/start", operation_id="workflow_start")
 async def workflow_start(payload: WorkflowStartRequest) -> dict[str, Any]:
     try:
@@ -122,6 +140,7 @@ async def workflow_start(payload: WorkflowStartRequest) -> dict[str, Any]:
                 "triggers_summary": triggers_summary(defn),
             },
         )
+    preflight = _loop_preflight_warning(defn)
 
     key = make_idempotency_key(payload.workflow_name, payload.trigger_context)
     execution_id = new_execution_id()
@@ -140,7 +159,10 @@ async def workflow_start(payload: WorkflowStartRequest) -> dict[str, Any]:
     transition(instance, WorkflowStatus.RUNNING)
     persist_instance(instance)
     _spawn(instance)
-    return instance.to_dict()
+    data = instance.to_dict()
+    if preflight is not None:
+        data["warning"] = preflight
+    return data
 
 
 @router.get("/api/v1/workflow/{execution_id}", operation_id="workflow_get_instance")
@@ -192,14 +214,36 @@ async def workflow_cancel(execution_id: str, payload: WorkflowCancelRequest) -> 
 
 @router.get("/api/v1/workflows", operation_id="workflow_list_definitions")
 async def workflow_list() -> dict[str, Any]:
+    # 蔚 2026-11-02 P3-3（第三次提）：附最近执行摘要——运维第一问
+    # 「这工作流最近跑得怎么样」从此 CLI 直接答。
+    definitions = list_workflows()
+    init_db()
+    latest: dict[str, dict[str, Any] | None] = {}
+    with connect() as conn:
+        for defn in definitions:
+            row = conn.execute(
+                "SELECT execution_id, status, updated_at FROM workflow_runs"
+                " WHERE workflow_name = ? ORDER BY updated_at DESC LIMIT 1",
+                (defn.name,),
+            ).fetchone()
+            latest[defn.name] = (
+                {
+                    "execution_id": row["execution_id"],
+                    "status": row["status"],
+                    "updated_at": row["updated_at"],
+                }
+                if row is not None
+                else None
+            )
     return {
         "workflows": [
             {
                 "name": defn.name,
                 "description": defn.description,
                 "triggers_summary": triggers_summary(defn),
+                "latest_run": latest[defn.name],
             }
-            for defn in list_workflows()
+            for defn in definitions
         ]
     }
 

@@ -25,7 +25,23 @@ StepFactory = Callable[["StepContext"], Awaitable[dict[str, Any]]]
 
 
 class StepError(Exception):
-    """A step failed (non-2xx upstream, transport error, bad payload)."""
+    """A step failed (non-2xx upstream, transport error, bad payload).
+
+    蔚 2026-11-02 P2-5：携带结构化字段（http_status / error_detail），
+    runner 据此填 StepResult 的 error_code / http_status / error_detail，
+    CLI status 直读不再从裸字符串里挖 JSON。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int | None = None,
+        error_detail: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+        self.error_detail = error_detail
 
 
 @dataclass
@@ -114,7 +130,11 @@ async def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     async with _make_client() as client:
         resp = await client.post(path, json=payload)
     if resp.status_code >= 400:
-        raise StepError(f"POST {path} -> {resp.status_code}: {resp.text[:500]}")
+        raise StepError(
+            f"POST {path} -> {resp.status_code}: {resp.text[:500]}",
+            http_status=resp.status_code,
+            error_detail=resp.text[:1000],
+        )
     return resp.json()
 
 

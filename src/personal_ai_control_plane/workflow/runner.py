@@ -25,7 +25,7 @@ from .state import (
     WorkflowStatus,
     transition,
 )
-from .steps import STEP_REGISTRY, StepContext, render_inputs
+from .steps import STEP_REGISTRY, StepContext, StepError, render_inputs
 
 #: Fallback timeout for steps that do not declare one (spec: timeouts enforced).
 DEFAULT_STEP_TIMEOUT_SECONDS = 120
@@ -78,11 +78,14 @@ def persist_step_result(execution_id: str, step: StepResult) -> None:
     with connect() as conn:
         conn.execute(
             "INSERT INTO workflow_step_results (execution_id, step_id, step_index,"
-            " status, inputs, outputs, error, started_at, updated_at, duration_ms)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " status, inputs, outputs, error, error_code, http_status, error_detail,"
+            " started_at, updated_at, duration_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(execution_id, step_id) DO UPDATE SET"
             " status = excluded.status, inputs = excluded.inputs,"
             " outputs = excluded.outputs, error = excluded.error,"
+            " error_code = excluded.error_code, http_status = excluded.http_status,"
+            " error_detail = excluded.error_detail,"
             " started_at = excluded.started_at, updated_at = excluded.updated_at,"
             " duration_ms = excluded.duration_ms",
             (
@@ -93,6 +96,9 @@ def persist_step_result(execution_id: str, step: StepResult) -> None:
                 _dump(step.inputs) if step.inputs is not None else None,
                 _dump(step.outputs) if step.outputs is not None else None,
                 step.error,
+                step.error_code,
+                step.http_status,
+                step.error_detail,
                 _iso_or_none(step.started_at),
                 _iso_or_none(step.updated_at),
                 step.duration_ms,
@@ -143,6 +149,9 @@ def load_instance(execution_id: str) -> WorkflowInstance | None:
                 inputs=json.loads(s["inputs"]) if s["inputs"] else None,
                 outputs=json.loads(s["outputs"]) if s["outputs"] else None,
                 error=s["error"],
+                error_code=s["error_code"],
+                http_status=s["http_status"],
+                error_detail=s["error_detail"],
                 started_at=_epoch_or_none(s["started_at"]),
                 updated_at=_epoch_or_none(s["updated_at"]),
                 duration_ms=s["duration_ms"],
@@ -281,10 +290,19 @@ async def run_workflow(instance: WorkflowInstance) -> WorkflowInstance:
             )
         except TimeoutError:
             result.error = f"step timed out after {timeout}s"
+            result.error_code = "TIMEOUT"
+            result.duration_ms = int((time.time() - result.started_at) * 1000)
+            _mark(instance, result, StepStatus.FAILED)
+        except StepError as exc:  # 蔚 2026-11-02 P2-5：结构化错误三字段
+            result.error = f"StepError: {exc}"
+            result.error_code = "UPSTREAM_HTTP" if exc.http_status is not None else "STEP_LOGIC"
+            result.http_status = exc.http_status
+            result.error_detail = exc.error_detail
             result.duration_ms = int((time.time() - result.started_at) * 1000)
             _mark(instance, result, StepStatus.FAILED)
         except Exception as exc:  # noqa: BLE001 - one step failure must not kill the loop
             result.error = f"{type(exc).__name__}: {exc}"
+            result.error_code = type(exc).__name__
             result.duration_ms = int((time.time() - result.started_at) * 1000)
             _mark(instance, result, StepStatus.FAILED)
 

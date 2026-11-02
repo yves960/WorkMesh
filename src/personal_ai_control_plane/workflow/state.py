@@ -92,6 +92,10 @@ class StepResult:
     inputs: dict[str, Any] | None = None
     outputs: dict[str, Any] | None = None
     error: str | None = None
+    # 蔚 2026-11-02 P2-5：结构化错误（裸字符串 error 保留作兼容，三字段供 CLI/运维直读）
+    error_code: str | None = None
+    http_status: int | None = None
+    error_detail: str | None = None
     started_at: float | None = None
     updated_at: float | None = None
     duration_ms: int | None = None
@@ -104,6 +108,9 @@ class StepResult:
             "inputs": self.inputs,
             "outputs": self.outputs,
             "error": self.error,
+            "error_code": self.error_code,
+            "http_status": self.http_status,
+            "error_detail": self.error_detail,
             "started_at": _iso(self.started_at),
             "updated_at": _iso(self.updated_at),
             "duration_ms": self.duration_ms,
