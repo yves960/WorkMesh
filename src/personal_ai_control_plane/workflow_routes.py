@@ -114,12 +114,20 @@ def _loop_preflight_warning(defn) -> str | None:
     + 浪费一次人工审批才在第 6 步失败，人的审批注意力不该被这么浪费。"""
     if not any(step.type == "forgeloop" for step in defn.steps):
         return None
-    executable = os.environ.get("AICP_LOOP_EXECUTABLE", "loop")
+    # 蔚 2026-11-08 N2：两支文案——变量已设但路径不存在 ≠ 变量未设，
+    # 已设还说「未设/不在 PATH」是自相矛盾（与 lint 端同口径）
+    raw = os.environ.get("AICP_LOOP_EXECUTABLE")
+    executable = raw if raw else "loop"
     if shutil.which(executable) is not None:
         return None
+    if raw:
+        return (
+            f"preflight: 工作流含 forgeloop 步，AICP_LOOP_EXECUTABLE 已设为 '{raw}' "
+            "但该路径不存在/不可执行——放行后该步必失败，请修正路径（本警告不阻断）"
+        )
     return (
         f"preflight: 工作流含 forgeloop 步，但可执行 '{executable}' 不在 PATH 且 "
-        "AICP_LOOP_EXECUTABLE 未指向有效路径——放行后该步必失败，建议先安装/配置（本警告不阻断）"
+        "AICP_LOOP_EXECUTABLE 未设——放行后该步必失败，建议先安装/配置（本警告不阻断）"
     )
 
 

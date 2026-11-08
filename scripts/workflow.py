@@ -4,12 +4,12 @@
 默认走 HTTP（AICP_API_BASE，默认 http://127.0.0.1:8765，trust_env=False 不读代理）；
 lint 子命令本地加载 YAML 校验（含前向引用静态检查），不依赖服务。
 
-用法示例：
-  python3 scripts/workflow.py lint java-ut-repair
-  python3 scripts/workflow.py list
-  python3 scripts/workflow.py start java-ut-repair --set user_message="UT 挂了" --set project_path=/tmp/demo
-  python3 scripts/workflow.py status <execution_id>
-  python3 scripts/workflow.py approve <execution_id> --reason "看起来没问题"
+用法示例（用 .venv 的 python，系统 python3 需 3.10+，入口有版本守卫）：
+  .venv/bin/python scripts/workflow.py lint java-ut-repair
+  .venv/bin/python scripts/workflow.py list
+  .venv/bin/python scripts/workflow.py start java-ut-repair --set user_message="UT 挂了" --set project_path=/tmp/demo
+  .venv/bin/python scripts/workflow.py status <execution_id>
+  .venv/bin/python scripts/workflow.py approve <execution_id> --decision approve --reason "看起来没问题"
 """
 from __future__ import annotations
 
@@ -18,6 +18,17 @@ import json
 import os
 import sys
 from pathlib import Path
+
+# 蔚 2026-11-08 N1：macOS 自带 python3 是 3.9.x，撞 src 的 PEP 604 语法
+# （settings.py 模块级 `str | None`）会裸 traceback TypeError——入口先守卫给人话。
+if sys.version_info < (3, 10):
+    print(
+        "[workflow] ERROR: 需要 Python 3.10+（当前 "
+        f"{sys.version_info.major}.{sys.version_info.minor}）——"
+        "请用 .venv/bin/python scripts/workflow.py ... 或升级 Python",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -161,11 +172,22 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
-    return _request(
-        "POST",
-        f"/api/v1/workflow/{args.execution_id}/approve",
-        {"decision": args.decision, "reason": args.reason},
-    )
+    payload = {"decision": args.decision, "reason": args.reason}
+    path = f"/api/v1/workflow/{args.execution_id}/approve"
+    if args.json:
+        return _request("POST", path, payload)
+    body, code = _fetch("POST", path, payload)
+    if code == 0:
+        # 蔚 2026-11-08 N3：approve 摘要化——P3-2 只覆盖了 start/status，
+        # approve 回 4KB 全量 JSON 刷屏是漏网之鱼；与 start/status 同款三行
+        print(f"{body.get('execution_id')} · {body.get('status')} · 已记录决策 {args.decision}")
+        if body.get("warning"):
+            print(f"  ⚠ {body['warning']}")
+        if args.decision == "approve":
+            print("  下一步：workflow.py status <execution_id> 看推进；失败步带 原因/怎么查")
+        else:
+            print("  下一步：REJECTED 为终态，余步 SKIPPED——修正后可换 trigger 重开")
+    return code
 
 
 def cmd_cancel(args: argparse.Namespace) -> int:
@@ -192,14 +214,23 @@ def cmd_lint(args: argparse.Namespace) -> int:
         marker = " (requires_approval)" if step.requires_approval else ""
         print(f"  - {step.id} [{step.type}]{marker}")
     # 蔚 2026-11-02 P3-4：preflight（与 start 端同口径）——审批注意力别浪费在必败局上
+    # 蔚 2026-11-08 N2：文案分两支——变量已设但路径不存在 ≠ 变量未设，
+    # 已设还说「未设」是自相矛盾（真机取证实锤）
     import shutil
     if any(step.type == "forgeloop" for step in defn.steps):
-        executable = os.environ.get("AICP_LOOP_EXECUTABLE", "loop")
+        raw = os.environ.get("AICP_LOOP_EXECUTABLE")
+        executable = raw if raw else "loop"
         if shutil.which(executable) is None:
-            print(
-                f"[lint] ⚠ preflight: forgeloop 需要 '{executable}' 可执行，"
-                "PATH 未找到且 AICP_LOOP_EXECUTABLE 未设——运行到该步必失败"
-            )
+            if raw:
+                print(
+                    f"[lint] ⚠ preflight: forgeloop 需要 '{raw}' 可执行，"
+                    "AICP_LOOP_EXECUTABLE 已设但该路径不存在/不可执行——运行到该步必失败"
+                )
+            else:
+                print(
+                    "[lint] ⚠ preflight: forgeloop 需要 'loop' 可执行，"
+                    "PATH 未找到且 AICP_LOOP_EXECUTABLE 未设——运行到该步必失败"
+                )
     return 0
 
 
@@ -226,10 +257,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="全量 JSON（含 inputs/outputs/PENDING 骨架）")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("approve", help="审批（approve/reject，仅 WAITING_FOR_APPROVAL 态）")
+    p = sub.add_parser("approve", help="审批（approve/reject，仅 WAITING_FOR_APPROVAL 态；默认三行摘要）")
     p.add_argument("execution_id")
     p.add_argument("--decision", choices=["approve", "reject"], default="approve")
     p.add_argument("--reason", default=None)
+    p.add_argument("--json", action="store_true", help="全量 JSON（含 context/step_results）")
     p.set_defaults(func=cmd_approve)
 
     p = sub.add_parser("cancel", help="取消 live 实例（PENDING/RUNNING/WAITING_FOR_APPROVAL）")
