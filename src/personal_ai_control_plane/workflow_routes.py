@@ -32,7 +32,7 @@ from pydantic import BaseModel
 
 from .db import connect, init_db
 from .workflow import loader, steps  # noqa: F401  (wires loader<->registry)
-from .workflow.idempotency import check_and_register, make_idempotency_key
+from .workflow.idempotency import check_and_register, make_idempotency_key, rebind_key
 from .workflow.loader import (
     WorkflowLoadError,
     list_workflows,
@@ -152,11 +152,21 @@ async def workflow_start(payload: WorkflowStartRequest) -> dict[str, Any]:
 
     key = make_idempotency_key(payload.workflow_name, payload.trigger_context)
     execution_id = new_execution_id()
+    restarted_from: str | None = None
     existing = await check_and_register(key, execution_id)
     if existing is not None and existing != execution_id:
-        # Duplicate trigger: return the existing run, never restart.
         instance = _INSTANCES.get(existing) or load_instance(existing)
-        if instance is not None:
+        if instance is not None and instance.status in (
+            WorkflowStatus.FAILED,
+            WorkflowStatus.CANCELLED,
+        ):
+            # 蔚 2026-11-17 N1：终态重开——FAILED/CANCELLED 的死实例不该吞掉重试。
+            # 同措辞重发 = 用户想再来一次：换绑幂等键到新实例，附一行说明。
+            # RUNNING/WAITING/PENDING 维持原幂等；REJECTED 保持复用（审批语义不可绕）。
+            await rebind_key(key, execution_id)
+            restarted_from = existing
+        elif instance is not None:
+            # Duplicate trigger: return the existing run, never restart.
             data = instance.to_dict()
             data["idempotent_reuse"] = True
             return data
@@ -165,11 +175,17 @@ async def workflow_start(payload: WorkflowStartRequest) -> dict[str, Any]:
     instance = create_instance(payload.workflow_name, payload.trigger_context, execution_id)
     _INSTANCES[instance.execution_id] = instance
     transition(instance, WorkflowStatus.RUNNING)
+    if existing is not None and existing != execution_id and restarted_from is not None:
+        # N1 终态重开说明（一行）：谁被取代、为何能重开
+        instance.context["restarted_from"] = restarted_from
+
     persist_instance(instance)
     _spawn(instance)
     data = instance.to_dict()
     if preflight is not None:
         data["warning"] = preflight
+    if restarted_from is not None:
+        data["restarted_from"] = restarted_from
     return data
 
 

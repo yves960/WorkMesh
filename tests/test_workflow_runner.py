@@ -188,3 +188,78 @@ def test_make_client_ignores_env_proxy(monkeypatch) -> None:
         import asyncio
 
         asyncio.run(client.aclose())
+
+
+def test_terminal_failure_same_trigger_restarts_new_execution(wf_env):
+    """蔚 2026-11-17 N1：FAILED 终态不再吞重试——同 trigger 重发直接重开新执行。
+
+    确定性复刻：一步必败的 INTOLERANT 测试流（无审批闸门、无外部依赖——
+    java-ut-repair 版本会停在审批后外部步上超时，教训入注）。RUNNING 态
+    复用行为由既有 test_same_trigger_restart_returns_same_execution_id 守护。
+    """
+    from workflow_testkit import write_workflow
+
+    write_workflow(wf_env["root"], "n1-fatal", """
+name: n1-fatal
+version: 1
+steps:
+  - id: boom
+    type: n1_fail_step
+    timeout_seconds: 5
+""")
+
+    async def n1_fail(ctx):
+        raise steps.StepError("N1 deterministic failure")
+
+    steps.register_step("n1_fail_step", n1_fail)
+    try:
+        client = TestClient(app)
+        trigger = trigger_for(wf_env["project"]) | {"n1_case": "terminal-retry"}
+        first = client.post("/api/v1/workflow/start", json={
+            "workflow_name": "n1-fatal", "trigger_context": trigger,
+        })
+        assert first.status_code == 200, first.text
+        first_id = first.json()["execution_id"]
+
+        import time as _t
+        deadline = _t.time() + 15
+        status = None
+        while _t.time() < deadline:
+            status = client.get(f"/api/v1/workflow/{first_id}").json()["status"]
+            if status in ("FAILED", "COMPLETED"):
+                break
+            _t.sleep(0.2)
+        assert status == "FAILED", f"预期 FAILED 实测 {status}"
+
+        second = client.post("/api/v1/workflow/start", json={
+            "workflow_name": "n1-fatal", "trigger_context": trigger,
+        })
+        assert second.status_code == 200, second.text
+        body = second.json()
+        assert body["execution_id"] != first_id, "终态重开必须给新 execution_id"
+        assert body.get("restarted_from") == first_id
+        assert body.get("idempotent_reuse") is None
+    finally:
+        del steps.STEP_REGISTRY["n1_fail_step"]
+
+
+def test_discovery_step_error_message_has_guidance(monkeypatch):
+    """蔚 2026-11-17 N4：无失败用例时的指引句 + 不留悬空冒号。"""
+    import types
+
+    from personal_ai_control_plane.workflow import steps as wf_steps
+
+    async def fake_post(path, payload):
+        return {"recommended_target": None, "failure_summary": ""}
+
+    monkeypatch.setattr(wf_steps, "_post", fake_post)
+    ctx = types.SimpleNamespace(inputs={"user_message": "修测试", "workspace_root": "/tmp"})
+    try:
+        import asyncio
+
+        asyncio.run(wf_steps.discovery_step(ctx))
+        raise AssertionError("discovery_step 应抛 StepError")
+    except wf_steps.StepError as err:
+        msg = str(err)
+        assert "surefire-reports" in msg and "mvn test" in msg
+        assert ": —" not in msg and not msg.rstrip("—需要").endswith(": "), msg

@@ -95,6 +95,19 @@ def _humanize_detail(raw: str | None) -> str:
     return text[:200]
 
 
+def _howto_for(step: dict) -> str:
+    """蔚 2026-11-17 N3：loop-not-found 对症话术——error_code 只是 UPSTREAM_HTTP，
+    detail 里却写着 loop executable not found + AICP_LOOP_EXECUTABLE 覆盖提示；
+    通用「目标服务起没起」会误导排查方向。与 preflight 同口径。"""
+    detail = _humanize_detail(step.get("error_detail") or step.get("error"))
+    if "loop" in detail.lower() and ("not found" in detail.lower() or "executable" in detail.lower()):
+        return (
+            "loop 可执行缺失——设 AICP_LOOP_EXECUTABLE 指向有效 loop 路径"
+            "（preflight 同口径：PATH 找 loop，或 brew install maven / loop run --maven 指定）"
+        )
+    return HOWTO.get(step.get("error_code") or "?", "看 error/error_detail 与上游服务日志")
+
+
 def _render_status_summary(body: dict) -> None:
     """蔚 2026-11-02 P3-2：默认摘要——一行总览 + 非 PENDING 步骤；--json 才全量。"""
     steps = body.get("step_results") or []
@@ -114,7 +127,7 @@ def _render_status_summary(body: dict) -> None:
             status = s.get("http_status")
             suffix = f" {status}" if status else ""
             print(f"      └ 原因 [{code}{suffix}]: {_humanize_detail(s.get('error_detail') or s.get('error'))}")
-            print(f"      └ 怎么查: {HOWTO.get(code, '看 error/error_detail 与上游服务日志')}")
+            print(f"      └ 怎么查: {_howto_for(s)}")
     if body.get("status") == "WAITING_FOR_APPROVAL":
         print("⏸ 等待审批：workflow.py approve <execution_id> --decision approve --reason '...'")
 
@@ -156,6 +169,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         print(f"{body.get('execution_id')} · {body.get('status')}")
         if body.get("idempotent_reuse"):
             print("  （幂等复用：同 trigger 已有实例，未重复启动）")
+        if body.get("restarted_from"):
+            print(f"  ↻ 终态重开：上一实例 {body['restarted_from']} 已 FAILED/CANCELLED，本实例为新执行")
         if body.get("warning"):
             print(f"  ⚠ {body['warning']}")
         print("  下一步：workflow.py status <execution_id>；到审批闸门时 approve <id> --decision approve")
@@ -191,11 +206,16 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 
 def cmd_cancel(args: argparse.Namespace) -> int:
-    return _request(
-        "POST",
-        f"/api/v1/workflow/{args.execution_id}/cancel",
-        {"reason": args.reason},
-    )
+    payload = {"reason": args.reason}
+    path = f"/api/v1/workflow/{args.execution_id}/cancel"
+    if args.json:
+        return _request("POST", path, payload)
+    body, code = _fetch("POST", path, payload)
+    if code == 0:
+        # 蔚 2026-11-17 N2：cancel 摘要化——与 start/status/approve 同款（此前 4KB 刷屏漏网）
+        print(f"{body.get('execution_id')} · {body.get('status')} · cancel_reason={args.reason or '-'}")
+        print("  下一步：list 看其余实例；同 trigger 重发 start 会因终态重开直起新执行")
+    return code
 
 
 def cmd_lint(args: argparse.Namespace) -> int:
@@ -264,9 +284,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="全量 JSON（含 context/step_results）")
     p.set_defaults(func=cmd_approve)
 
-    p = sub.add_parser("cancel", help="取消 live 实例（PENDING/RUNNING/WAITING_FOR_APPROVAL）")
+    p = sub.add_parser("cancel", help="取消 live 实例（默认三行摘要，--json 全量）")
     p.add_argument("execution_id")
     p.add_argument("--reason", default="")
+    p.add_argument("--json", action="store_true", help="全量 JSON（含 context/step_results）")
     p.set_defaults(func=cmd_cancel)
 
     p = sub.add_parser("lint", help="本地校验 YAML（含前向引用静态检查），无需服务")

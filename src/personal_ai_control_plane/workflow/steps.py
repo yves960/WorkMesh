@@ -166,8 +166,13 @@ async def discovery_step(ctx: StepContext) -> dict[str, Any]:
     }
     result = await _post("/api/v1/discovery", payload)
     if not result.get("recommended_target"):
+        # 蔚 2026-11-17 N4：冒号后别空尾巴——summary 空时不留悬空冒号，
+        # 并补对症指引（target/surefire-reports 需先有失败用例）
+        summary = str(result.get("failure_summary") or "").strip()[:200]
+        tail = f": {summary}" if summary else ""
         raise StepError(
-            f"discovery found no failing test to target: {result.get('failure_summary', '')[:200]}"
+            f"discovery found no failing test to target{tail}"
+            "——需要 target/surefire-reports 存在失败用例（或先跑一次 mvn test）"
         )
     return result
 

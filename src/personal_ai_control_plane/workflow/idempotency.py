@@ -29,6 +29,18 @@ def make_idempotency_key(workflow_name: str, trigger_context: dict[str, Any]) ->
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+async def rebind_key(key: str, execution_id: str) -> None:
+    """蔚 2026-11-17 N1：终态重开——幂等键命中 FAILED/CANCELLED 死实例时，
+    把键换绑到新 execution（原语义 same trigger => same execution, never restart
+    只对活实例成立；死实例吞掉用户重试是本单病灶）。"""
+    init_db()
+    with connect() as conn:
+        conn.execute(
+            "UPDATE workflow_idempotency SET execution_id = ? WHERE idempotency_key = ?",
+            (execution_id, key),
+        )
+
+
 async def check_and_register(key: str, execution_id: str) -> str | None:
     """Register key -> execution_id atomically.
 
