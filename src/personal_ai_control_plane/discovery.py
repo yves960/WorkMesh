@@ -141,15 +141,39 @@ def _detect_repo_url(project_path: Path) -> str | None:
     return url or None
 
 
-def _parse_surefire_reports(project_path: Path) -> tuple[list[str], str]:
-    """Extract failing tests from target/surefire-reports/*.txt (and *.xml)."""
+def _parse_surefire_reports(project_path: Path) -> tuple[list[str], str, dict[str, int]]:
+    """蔚 2026-11-24 P3-2：XML 结构化解析，txt 保留正则；返回源统计供置信度分级。
+
+    此前 *.txt 与 TEST-*.xml 一视同仁逐行正则——真实 surefire XML 的 <failure>
+    元素一行都匹配不上：只留 XML 报告的 CI 工件被系统性漏检（掉进 mvn fallback），
+    而长得像 compact 格式的手植文本行却以 0.9 置信度采信（demo-java-ut 实证：
+    mock 的 TEST-*.txt 被采信、旁边三份真实 XML 全程被无视）。"""
     report_dir = project_path / "target" / "surefire-reports"
     failing: list[str] = []
     summary_lines: list[str] = []
+    stats = {"xml_hits": 0, "txt_hits": 0}
     if not report_dir.is_dir():
-        return failing, ""
-    txts = sorted(report_dir.glob("*.txt")) + sorted(report_dir.glob("TEST-*.xml"))
-    for report in txts:
+        return failing, "", stats
+    # XML 结构化：testcase 带 failure/error 子元素即失败
+    for report in sorted(report_dir.glob("TEST-*.xml")):
+        try:
+            root = ET.parse(report).getroot()
+        except ET.ParseError:
+            continue
+        for case in root.iter("testcase"):
+            if case.find("failure") is None and case.find("error") is None:
+                continue
+            fqn = case.get("classname") or ""
+            method = case.get("name") or ""
+            if not (fqn and method):
+                continue
+            test = f"{fqn}#{method}"
+            if test not in failing:
+                failing.append(test)
+            summary_lines.append(f"{test} FAILED（XML {report.name}）")
+            stats["xml_hits"] += 1
+    # txt 正则保留（compact + surefire 文本两种格式）
+    for report in sorted(report_dir.glob("*.txt")):
         try:
             content = report.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -161,6 +185,7 @@ def _parse_surefire_reports(project_path: Path) -> tuple[list[str], str]:
                 if test not in failing:
                     failing.append(test)
                 summary_lines.append(line.strip())
+                stats["txt_hits"] += 1
                 continue
             real = _REAL_RE.search(line)
             if real:
@@ -169,8 +194,9 @@ def _parse_surefire_reports(project_path: Path) -> tuple[list[str], str]:
                 if test not in failing:
                     failing.append(test)
                 summary_lines.append(line.strip())
+                stats["txt_hits"] += 1
     summary = "\n".join(summary_lines)[:FAILURE_SUMMARY_MAX_CHARS]
-    return failing, summary
+    return failing, summary, stats
 
 
 def _run_mvn_tests(project_path: Path) -> tuple[list[str], str, bool]:
@@ -186,7 +212,7 @@ def _run_mvn_tests(project_path: Path) -> tuple[list[str], str, bool]:
         return [], "", False
     output = "\n".join((proc.stdout or "") + "\n" + (proc.stderr or ""))  # 2>&1
     tail = "\n".join(output.splitlines()[-200:])  # tail -200
-    failing, _ = _parse_surefire_reports(project_path)
+    failing = _parse_surefire_reports(project_path)[0]
     if failing:
         return failing, tail[:FAILURE_SUMMARY_MAX_CHARS], True
     # fall back to parsing the mvn console itself
@@ -225,8 +251,14 @@ def discover_from_user_message(
 
     from_reports = _parse_surefire_reports(project_path)
     if from_reports[0]:
-        failing_tests, failure_summary = from_reports
-        confidence = 0.9  # Surefire reports found — best evidence
+        failing_tests, failure_summary, stats = from_reports
+        if stats["xml_hits"] > 0:
+            confidence = 0.9  # XML 结构化命中——最硬证据
+        else:
+            # 蔚 2026-11-24 P3-2：仅 txt 正则命中（长得像 compact 的文本行也会中）
+            # ——降置信度并注明来源，手植 mock 文件不再冒充高置信
+            confidence = 0.7
+            failure_summary = f"[来源：仅 .txt 正则命中，无 XML 结构化佐证]\n{failure_summary}"
     else:
         # Fallback: one guarded `mvn test` run. Errors never propagate.
         failing_tests, failure_summary, ran = _run_mvn_tests(project_path)

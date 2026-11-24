@@ -78,7 +78,8 @@ def test_surefire_report_parsing(tmp_path):
     result = discover_from_user_message("UT 挂了", str(tmp_path))
     assert result.failing_tests == ["com.demo.UserServiceTest#testLogin"]
     assert result.recommended_target == "com.demo.UserServiceTest#testLogin"
-    assert result.discovery_confidence == 0.9
+    # 蔚 2026-11-24 P3-2 新契约：仅 txt 正则命中降 0.7（XML 结构化才配 0.9）
+    assert result.discovery_confidence == 0.7
     assert "testLogin" in result.failure_summary
 
 
@@ -189,4 +190,82 @@ def test_api_route_full_roundtrip(tmp_path):
     assert "com.demo.UserServiceTest#testLogin" in data["failing_tests"]
     assert data["recommended_target"] == "com.demo.UserServiceTest#testLogin"
     assert data["recommended_profile"] == "java-ut-fixer"
-    assert data["discovery_confidence"] == 0.9
+    assert data["discovery_confidence"] == 0.7  # txt-only 新契约（蔚 2026-11-24 P3-2）
+
+
+def test_surefire_xml_structural_parse(tmp_path, monkeypatch):
+    """蔚 2026-11-24 P3-2：XML 走结构化——<failure> 元素此前逐行正则一行都匹配不上。"""
+    from personal_ai_control_plane.discovery import _parse_surefire_reports
+
+    reports = tmp_path / "target" / "surefire-reports"
+    reports.mkdir(parents=True)
+    (reports / "TEST-com.example.demo.OrderServiceTest.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<testsuite name="com.example.demo.OrderServiceTest" tests="2" failures="1">'
+        '<testcase classname="com.example.demo.OrderServiceTest" name="testShip" time="0.01">'
+        '<failure message="assertion failed" type="java.lang.AssertionError">boom</failure>'
+        "</testcase>"
+        '<testcase classname="com.example.demo.OrderServiceTest" name="testCancel" time="0.01"/>'
+        "</testsuite>",
+        encoding="utf-8",
+    )
+    failing, summary, stats = _parse_surefire_reports(tmp_path)
+    assert failing == ["com.example.demo.OrderServiceTest#testShip"]
+    assert "XML" in summary
+    assert stats["xml_hits"] == 1 and stats["txt_hits"] == 0
+
+
+def test_txt_only_hits_downgrade_confidence(tmp_path, monkeypatch):
+    """蔚 2026-11-24 P3-2：仅 txt 正则命中——降置信度 + 来源注明，手植 mock 不冒充高置信。"""
+    reports = tmp_path / "target" / "surefire-reports"
+    reports.mkdir(parents=True)
+    (reports / "TEST-com.demo.UserServiceTest.txt").write_text(
+        "Tests run: 1, Failures: 1\ncom.demo.UserServiceTest#testLogin FAILED\n",
+        encoding="utf-8",
+    )
+    from personal_ai_control_plane.discovery import _parse_surefire_reports
+
+    failing, summary, stats = _parse_surefire_reports(tmp_path)
+    assert failing == ["com.demo.UserServiceTest#testLogin"]
+    assert stats["xml_hits"] == 0 and stats["txt_hits"] == 1
+    # 端到端 txt-only 降级真锁：把 tmp 做成 workspace 可扫的项目
+    import shutil as _sh
+
+    ws = tmp_path / "ws-root"
+    ws.mkdir()
+    _sh.copytree(tmp_path / "target", ws / "target", dirs_exist_ok=True)
+    (ws / "pom.xml").write_text(
+        "<project><groupId>com.demo</groupId><artifactId>demo</artifactId><version>0</version></project>",
+        encoding="utf-8",
+    )
+    result = discover_from_user_message("帮我修失败的 UT", workspace_root=str(ws))
+    assert result.discovery_confidence == 0.7
+    assert "仅 .txt 正则命中" in result.failure_summary
+
+
+def test_forgeloop_project_path_fallback_chain(tmp_path, monkeypatch):
+    """蔚 2026-11-24 P3-1：inputs.project_path 回退链——无 discovery 步的流不再 400。"""
+    import asyncio
+    import types
+
+    from personal_ai_control_plane.workflow import steps as wf_steps
+
+    captured = {}
+
+    async def fake_post(path, payload):
+        if path == "/api/v1/execution/plan":
+            captured["plan_payload"] = payload
+            return {"plan_id": "plan-test-1"}
+        if path == "/api/v1/execution/confirm":
+            return {"status": "launched", "execution_id": "loop-exec-1", "run_id": "run-1"}
+        return {}
+
+    monkeypatch.setattr(wf_steps, "_post", fake_post)
+    ctx = types.SimpleNamespace(
+        context={},
+        inputs={"project_path": "/Users/sy/Projects/self/demo-java-ut"},
+    )
+    result = asyncio.run(wf_steps.forgeloop_step(ctx))
+    assert result["result"] == "launched"
+    # plan 载荷的 discovery.project_path 必须来自 inputs 回退链
+    assert captured["plan_payload"]["discovery"]["project_path"] == "/Users/sy/Projects/self/demo-java-ut"

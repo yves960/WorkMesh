@@ -207,6 +207,13 @@ async def forgeloop_step(ctx: StepContext) -> dict[str, Any]:
     the explicit user confirmation recorded in the workflow itself.
     """
     discovery = dict(ctx.context.get("discovery") or {})
+    # 蔚 2026-11-24 P3-1：inputs.project_path 曾是死参数（yaml 声明了但步骤从不
+    # 消费）——approval→forgeloop 无 discovery 步的流，plan 载荷无 project_path
+    # 必炸 UPSTREAM_HTTP 400（真机 wf-20261124-f999e0）。回退链：inputs →
+    # discovery 上下文，组装 plan 前确保 project_path 有值。
+    project_path = ctx.inputs.get("project_path") or discovery.get("project_path")
+    if project_path:
+        discovery["project_path"] = project_path
     overrides: dict[str, Any] = {}
     if ctx.inputs.get("profile"):
         overrides["profile"] = ctx.inputs.get("profile")

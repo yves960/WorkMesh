@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -92,6 +93,8 @@ def _humanize_detail(raw: str | None) -> str:
             text = str(parsed.get("detail") or parsed.get("message") or text)
     except (ValueError, TypeError):
         pass
+    # 蔚 2026-11-24 P3-1 顺手清：异常类名前缀（StepError: 等）漏进人话——剥掉
+    text = re.sub(r"^(?:[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)):\s*", "", text)
     return text[:200]
 
 
